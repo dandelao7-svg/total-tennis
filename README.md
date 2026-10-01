@@ -57,9 +57,15 @@ With no Stripe keys and `NODE_ENV` not `production`, purchases and subscriptions
 
 In the app: **Setup → Card payments**. The owner pastes their Stripe secret key, and optionally a webhook signing secret for `<APP_URL>/api/stripe/webhook/<academy id>`. The page shows the exact URL. Keys are encrypted at rest. Even without the webhook, credits are issued when the student returns from Stripe Checkout.
 
+## To do
+
+- **Show-password eye icon** on every password field (log in, sign up, academy sign-up, change password, operator login).
+- **Self-serve password reset**: "Forgot password?" emails a one-time link. Needs email sending first (e.g. Resend, as in ShopSell). Today the owner resets passwords from the student's page.
+- **Phone number formatting**: fields format as you type, `(805) 495-0111`, on every phone field.
+
 ## Not built yet
 
-- Email (password reset links, booking confirmations, reminders). Today the owner resets passwords from the student's page.
+- Email (booking confirmations, reminders).
 - Card refunds from inside the app (refund in Stripe, then remove the credits).
 - Waitlists for full lessons, and SMS reminders.
 - Custom domains / subdomains (booking pages are `/a/<slug>` for now).
