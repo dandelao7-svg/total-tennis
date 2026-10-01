@@ -12,8 +12,17 @@ const db        = require('./db');
 const { encrypt, decrypt, isConfigured: encryptionConfigured } = require('./lib/crypto');
 
 const PROD = process.env.NODE_ENV === 'production';
-const JWT_SECRET = process.env.JWT_SECRET || (PROD ? null : 'dev-only-secret-change-me');
-if (!JWT_SECRET) { console.error('JWT_SECRET is required in production'); process.exit(1); }
+// In production, refuse to start half-configured — and name everything that's
+// missing at once, so a crash-looping deploy explains itself in the logs.
+if (PROD) {
+  const missing = ['DATABASE_URL', 'JWT_SECRET', 'ENCRYPTION_KEY'].filter((k) => !process.env[k]);
+  if (missing.length) {
+    console.error(`STARTUP STOPPED — missing required variable(s): ${missing.join(', ')}. ` +
+      'Set them in Railway → your service → Variables. See .env.example for what each one is.');
+    process.exit(1);
+  }
+}
+const JWT_SECRET = process.env.JWT_SECRET || 'dev-only-secret-change-me';
 if (!encryptionConfigured()) console.warn('ENCRYPTION_KEY not set — academies cannot connect Stripe until it is.');
 
 // Platform Stripe account: academies pay us a monthly subscription.
