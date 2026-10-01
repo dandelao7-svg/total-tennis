@@ -1,0 +1,26 @@
+{
+  "name": "total-tennis",
+  "version": "1.0.0",
+  "description": "Total Tennis Academy — student self-serve lesson booking, credit packs, pro hours and court-fee tracking.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "seed-demo": "node seed-demo.js"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.5.8",
+    "bcryptjs": "^3.0.3",
+    "dotenv": "^18.0.5",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.7.0",
+    "helmet": "^8.3.0",
+    "jsonwebtoken": "^9.0.3",
+    "pg": "^8.23.1",
+    "stripe": "^23.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "private": true
+}

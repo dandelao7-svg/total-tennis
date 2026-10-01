@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Book Lessons</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar"><div class="wrap"><span class="brand-mark"></span><span class="title" id="acName">Loading…</span></div></header>
+  <div class="narrow">
+    <div id="notFound" class="card hidden">
+      <h1>Academy not found</h1>
+      <p class="muted">Check the link you were given, or ask the academy for their booking page.</p>
+    </div>
+    <div id="panel" class="card hidden">
+      <h1 id="heading">Log in</h1>
+      <p class="muted" id="sub">Book group and private lessons online.</p>
+      <div class="notice error hidden" id="err"></div>
+      <form id="form" novalidate>
+        <div id="signupOnly" class="hidden">
+          <label for="name">Full name</label>
+          <input id="name" name="name" autocomplete="name">
+          <label for="phone">Mobile phone</label>
+          <input id="phone" name="phone" type="tel" autocomplete="tel">
+        </div>
+        <label for="email">Email</label>
+        <input id="email" name="email" type="email" autocomplete="email" required>
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required>
+        <p class="hint hidden" id="pwHint">At least 8 characters.</p>
+        <button class="primary block" type="submit" id="submit" style="margin-top:16px">Log in</button>
+      </form>
+      <p class="small" style="margin-top:14px" id="switchWrap">
+        <span id="switchText">New student?</span> <a href="#" id="switch">Create an account</a>
+      </p>
+      <p class="small muted" id="forgot">Forgot your password? Ask the academy to reset it for you.</p>
+    </div>
+    <p class="small muted" id="contact" style="text-align:center"></p>
+  </div>
+  <script src="/common.js"></script>
+  <script src="/academy.js"></script>
+</body>
+</html>

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Start Free Trial</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar"><div class="wrap"><span class="brand-mark"></span><a class="title" href="/" style="color:inherit;text-decoration:none">CourtDesk</a></div></header>
+  <div class="narrow" style="max-width:520px">
+    <div class="card">
+      <h1>Set up your academy</h1>
+      <p class="muted">14 days free. You'll add courts, pros and prices next.</p>
+      <div class="notice error hidden" id="err"></div>
+      <form id="form" novalidate>
+        <label for="academyName">Academy name</label>
+        <input id="academyName" name="academyName" placeholder="e.g. Total Tennis Academy" required>
+        <label for="slug">Booking page address</label>
+        <div class="row" style="gap:6px;flex-wrap:nowrap"><span class="muted small" id="host" style="white-space:nowrap"></span><input id="slug" name="slug" placeholder="totaltennis" required></div>
+        <p class="hint">Lowercase letters, numbers and dashes. This is the link you'll give students.</p>
+        <div class="form-row">
+          <div><label for="name">Your name</label><input id="name" name="name" autocomplete="name" required></div>
+          <div><label for="phone">Phone</label><input id="phone" name="phone" type="tel" autocomplete="tel"></div>
+        </div>
+        <label for="email">Email</label>
+        <input id="email" name="email" type="email" autocomplete="email" required>
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="new-password" required>
+        <p class="hint">At least 8 characters.</p>
+        <input type="hidden" name="timezone" id="timezone">
+        <button class="primary block" type="submit" id="submit" style="margin-top:16px">Create my academy</button>
+      </form>
+    </div>
+  </div>
+  <script src="/common.js"></script>
+  <script src="/start.js"></script>
+</body>
+</html>
