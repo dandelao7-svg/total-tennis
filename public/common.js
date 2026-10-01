@@ -163,9 +163,112 @@ const TT = (() => {
   }
   const dollarsToCents = (v) => Math.round(parseFloat(String(v).replace(/[$,]/g, '')) * 100);
 
+  // ── Field enhancements, applied to every page and every modal automatically ──
+
+  // US phone numbers format as you type: (805) 495-0111. Numbers starting with
+  // + (other than +1) are left alone for international callers.
+  function formatPhone(raw) {
+    const t = String(raw || '').trim();
+    if (t.startsWith('+') && !t.startsWith('+1')) return raw;
+    let d = t.replace(/\D/g, '');
+    if (d.length > 10 && d[0] === '1') d = d.slice(1);
+    d = d.slice(0, 10);
+    if (!d) return '';
+    if (d.length < 4) return `(${d}`;
+    if (d.length < 7) return `(${d.slice(0, 3)}) ${d.slice(3)}`;
+    return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`;
+  }
+  const digitsBefore = (s, pos) => s.slice(0, pos).replace(/\D/g, '').length;
+  function caretAfterDigits(s, n) {
+    if (n === 0) return s.startsWith('(') ? 1 : 0;
+    let seen = 0;
+    for (let i = 0; i < s.length; i++) if (/\d/.test(s[i]) && ++seen === n) return i + 1;
+    return s.length;
+  }
+  function reformatPhone(el) {
+    const before = el.value;
+    const next = formatPhone(before);
+    if (next === before) return;
+    const n = digitsBefore(before, el.selectionStart ?? before.length);
+    el.value = next;
+    if (document.activeElement === el) { const p = caretAfterDigits(next, n); el.setSelectionRange(p, p); }
+  }
+  document.addEventListener('input', (e) => { if (e.target.matches('input[type=tel]')) reformatPhone(e.target); });
+  // Backspacing over a ")" "-" or space would otherwise do nothing (the format
+  // puts it straight back), so delete the digit before it instead.
+  document.addEventListener('beforeinput', (e) => {
+    const el = e.target;
+    if (!el.matches('input[type=tel]') || e.inputType !== 'deleteContentBackward') return;
+    const pos = el.selectionStart;
+    if (pos !== el.selectionEnd || pos === 0 || /\d/.test(el.value[pos - 1]) || el.value.trim().startsWith('+')) return;
+    e.preventDefault();
+    const n = digitsBefore(el.value, pos);
+    if (!n) return;
+    const d = el.value.replace(/\D/g, '');
+    el.value = formatPhone(d.slice(0, n - 1) + d.slice(n));
+    const p = caretAfterDigits(el.value, n - 1);
+    el.setSelectionRange(p, p);
+  });
+
+  const EYE = '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+  const EYE_OFF = '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.1 10.1 0 0 1 12 19C5 19 1 12 1 12a18.5 18.5 0 0 1 5.06-5.94M9.9 4.24A9.1 9.1 0 0 1 12 4c7 0 11 7 11 7a18.5 18.5 0 0 1-2.16 3.19M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
+  const MIN_PASSWORD = 8;
+
+  function enhance(root) {
+    if (!root.querySelectorAll) return;
+    // Show/hide eye on every password box; new-password boxes also get a live length check.
+    for (const input of root.querySelectorAll('input[type=password]:not([data-pw])')) {
+      input.dataset.pw = '1';
+      const field = document.createElement('div');
+      field.className = 'pw-field';
+      const box = document.createElement('span');
+      box.className = 'pw-box';
+      input.replaceWith(field);
+      field.appendChild(box);
+      box.appendChild(input);
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'pw-eye';
+      btn.setAttribute('aria-label', 'Show password');
+      btn.innerHTML = EYE;
+      btn.addEventListener('click', () => {
+        const show = input.type === 'password';
+        input.type = show ? 'text' : 'password';
+        btn.innerHTML = show ? EYE_OFF : EYE;
+        btn.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+        input.focus();
+      });
+      box.appendChild(btn);
+      // Shown only while the box is for a NEW password; a page that switches
+      // a box between log-in and sign-up fires an 'input' event to refresh it.
+      const rule = document.createElement('p');
+      rule.className = 'pw-rule';
+      field.appendChild(rule);
+      const check = () => {
+        const n = input.value.length;
+        rule.hidden = input.autocomplete !== 'new-password';
+        rule.classList.toggle('ok', n >= MIN_PASSWORD);
+        rule.textContent = n >= MIN_PASSWORD ? `✓ At least ${MIN_PASSWORD} characters`
+          : n ? `At least ${MIN_PASSWORD} characters (${MIN_PASSWORD - n} more)` : `At least ${MIN_PASSWORD} characters`;
+      };
+      input.addEventListener('input', check);
+      check();
+    }
+    for (const input of root.querySelectorAll('input[type=tel]:not([data-tel])')) {
+      input.dataset.tel = '1';
+      input.setAttribute('inputmode', 'tel');
+      if (!input.placeholder) input.placeholder = '(805) 555-0123';
+      if (input.value) input.value = formatPhone(input.value);
+    }
+  }
+  enhance(document);
+  new MutationObserver((muts) => {
+    for (const m of muts) for (const n of m.addedNodes) if (n.nodeType === 1) enhance(n);
+  }).observe(document.documentElement, { childList: true, subtree: true });
+
   return {
     esc, html, raw, slug, token, api, setTz, fmtDay, fmtDate, fmtTime, fmtDateTime, dayKey, money, length, endTime,
-    cap, monthLabel, currentMonth, addMonths, zonedToIso, isoToZoned, toast, modal, confirmBox, formValues, dollarsToCents,
+    cap, monthLabel, currentMonth, addMonths, zonedToIso, isoToZoned, toast, modal, confirmBox, formValues, dollarsToCents, formatPhone,
     get tz() { return tz; },
   };
 })();

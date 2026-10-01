@@ -7,7 +7,7 @@ lessons. Built first for Total Tennis Academy.
 ## What it does
 
 **Students** (phone-friendly)
-- Sign up on the academy's booking page.
+- Sign up on the academy's booking page. Forgot password? A one-time reset link is emailed (needs RESEND_API_KEY + EMAIL_FROM).
 - Buy a month of group lessons as a credit pack (1-hour at $22.50, 1½-hour at $37.50 by default), paid by card into the academy's own Stripe account.
 - Book group lessons by day, time and location — only at the skill level a pro gave them.
 - Cancel up to the start time; the credit comes back and stays good through the end of the following month.
@@ -57,15 +57,9 @@ With no Stripe keys and `NODE_ENV` not `production`, purchases and subscriptions
 
 In the app: **Setup → Card payments**. The owner pastes their Stripe secret key, and optionally a webhook signing secret for `<APP_URL>/api/stripe/webhook/<academy id>`. The page shows the exact URL. Keys are encrypted at rest. Even without the webhook, credits are issued when the student returns from Stripe Checkout.
 
-## To do
-
-- **Show-password eye icon** on every password field (log in, sign up, academy sign-up, change password, operator login).
-- **Self-serve password reset**: "Forgot password?" emails a one-time link. Needs email sending first (e.g. Resend, as in ShopSell). Today the owner resets passwords from the student's page.
-- **Phone number formatting**: fields format as you type, `(805) 495-0111`, on every phone field.
-
 ## Not built yet
 
-- Email (booking confirmations, reminders).
+- Booking confirmation and reminder emails (password-reset email is built).
 - Card refunds from inside the app (refund in Stripe, then remove the credits).
 - Waitlists for full lessons, and SMS reminders.
 - Custom domains / subdomains (booking pages are `/a/<slug>` for now).

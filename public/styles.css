@@ -196,3 +196,15 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   .item .main { min-width: 0; flex-basis: 100%; }
 }
 code { overflow-wrap: anywhere; word-break: break-word; }
+
+/* Password show/hide eye + live length rule (added by common.js) */
+.pw-box { position: relative; display: block; }
+.pw-box input { padding-right: 46px; }
+.pw-eye {
+  position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+  width: 38px; height: 34px; padding: 0; border: none; background: transparent; color: var(--muted);
+}
+.pw-eye:hover { color: var(--text); filter: none; }
+.pw-eye:focus-visible { outline: 2px solid var(--brand); border-radius: 6px; }
+.pw-rule { color: var(--muted); font-size: .85rem; margin: 4px 0 0; }
+.pw-rule.ok { color: var(--ok); }

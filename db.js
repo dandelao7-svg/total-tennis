@@ -221,6 +221,21 @@ async function initSchema() {
     );
     CREATE INDEX IF NOT EXISTS private_lessons_academy_starts_idx ON private_lessons (academy_id, starts_at);
 
+    -- Bumped whenever a password changes; tokens carrying an older value stop
+    -- working, so a reset logs the account out everywhere else.
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS pwv INT NOT NULL DEFAULT 0;
+
+    -- "Forgot password" links. Only a SHA-256 of the token is stored.
+    CREATE TABLE IF NOT EXISTS password_resets (
+      id          SERIAL PRIMARY KEY,
+      academy_id  INT NOT NULL REFERENCES academies(id),
+      user_id     INT NOT NULL REFERENCES users(id),
+      token_hash  TEXT UNIQUE NOT NULL,
+      expires_at  TIMESTAMPTZ NOT NULL,
+      used_at     TIMESTAMPTZ,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
     -- Records that a pro's group-lesson pay for a month was paid out.
     CREATE TABLE IF NOT EXISTS payroll_payments (
       id           SERIAL PRIMARY KEY,

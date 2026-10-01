@@ -10,6 +10,7 @@ const jwt       = require('jsonwebtoken');
 const Stripe    = require('stripe');
 const db        = require('./db');
 const { encrypt, decrypt, isConfigured: encryptionConfigured } = require('./lib/crypto');
+const email     = require('./lib/email');
 
 const PROD = process.env.NODE_ENV === 'production';
 // In production, refuse to start half-configured — and name everything that's
@@ -74,6 +75,17 @@ function emailOf(v) {
   return email;
 }
 
+// US numbers are stored as (805) 495-0111; anything else (e.g. +44…) is kept as typed.
+function phoneOf(v, name = 'Phone') {
+  const s = str(v, name, { optional: true, max: 40 });
+  if (!s) return null;
+  if (s.startsWith('+') && !s.startsWith('+1')) return s;
+  let d = s.replace(/\D/g, '');
+  if (d.length === 11 && d[0] === '1') d = d.slice(1);
+  if (d.length !== 10) fail(400, `${name}: enter a 10-digit number, e.g. (805) 495-0111`);
+  return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`;
+}
+
 // 'YYYY-MM' of a moment, in the given time zone.
 function monthOf(tz, date = new Date()) {
   const p = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit' }).formatToParts(date);
@@ -128,7 +140,7 @@ function academyStripe(a) {
 
 // ── Auth ─────────────────────────────────────────────────────
 
-const signToken = (user) => jwt.sign({ uid: user.id }, JWT_SECRET, { expiresIn: '30d' });
+const signToken = (user) => jwt.sign({ uid: user.id, pwv: user.pwv || 0 }, JWT_SECRET, { expiresIn: '30d' });
 
 // While an academy's subscription is lapsed, only the owner can get in, and
 // only far enough to see their account and pay.
@@ -146,6 +158,8 @@ async function requireAuth(req, res, next) {
     `SELECT row_to_json(u) AS u, row_to_json(a) AS a
        FROM users u JOIN academies a ON a.id = u.academy_id WHERE u.id = $1`, [payload.uid]);
   if (!row || !row.u.active) return res.status(401).json({ error: 'Account not active' });
+  // Password changed since this token was issued → log out.
+  if ((payload.pwv || 0) !== row.u.pwv) return res.status(401).json({ error: 'Your password was changed — please log in again' });
   req.user = row.u;
   req.academy = row.a;
   req.aid = row.a.id;
@@ -261,7 +275,7 @@ app.post('/api/auth/academy-signup', async (req, res) => {
     slug, name, timezone,
     ownerName: str(req.body.name, 'Your name', { max: 100 }),
     ownerEmail: emailOf(req.body.email),
-    ownerPhone: str(req.body.phone, 'Phone', { optional: true, max: 40 }),
+    ownerPhone: phoneOf(req.body.phone),
     passwordHash,
     trialDays: TRIAL_DAYS,
   }));
@@ -287,7 +301,7 @@ app.post('/api/auth/signup', async (req, res) => {
   if (!academyLive(a)) fail(402, `${a.name}'s online booking is paused — please contact the academy`);
   const name = str(req.body.name, 'Name', { max: 100 });
   const email = emailOf(req.body.email);
-  const phone = str(req.body.phone, 'Phone', { optional: true, max: 40 });
+  const phone = phoneOf(req.body.phone);
   const password = String(req.body.password || '');
   if (password.length < 8) fail(400, 'Password must be at least 8 characters');
   if (await db.one('SELECT 1 FROM users WHERE academy_id = $1 AND email = $2', [a.id, email])) {
@@ -308,6 +322,59 @@ app.post('/api/auth/login', async (req, res) => {
   }
   if (!user.active) fail(403, 'This account has been deactivated — contact the academy');
   res.json({ token: signToken(user), user: publicUser(user) });
+});
+
+// ── Forgot / reset password ──────────────────────────────────
+
+const sha256 = (v) => crypto.createHash('sha256').update(v).digest('hex');
+const RESET_MINUTES = 60;
+const escapeHtml = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+// Always answers the same way, so it can't be used to discover who has an account.
+app.post('/api/auth/forgot', async (req, res) => {
+  const a = await academyBySlug(req.body.academy);
+  const addr = String(req.body.email || '').trim().toLowerCase();
+  const user = addr ? await db.one('SELECT * FROM users WHERE academy_id = $1 AND email = $2 AND active', [a.id, addr]) : null;
+  if (user) {
+    const token = crypto.randomBytes(32).toString('base64url');
+    await db.query(
+      `INSERT INTO password_resets (academy_id, user_id, token_hash, expires_at)
+       VALUES ($1, $2, $3, now() + make_interval(mins => $4::int))`, [a.id, user.id, sha256(token), RESET_MINUTES]);
+    // The token rides in the #fragment so it never reaches server logs or Referer headers.
+    const link = `${originOf(req)}/a/${a.slug}/reset#token=${token}`;
+    const s = db.settingsOf(a);
+    await email.sendEmail({
+      to: user.email,
+      replyTo: s.contact_email || undefined,
+      subject: `Reset your ${a.name} password`,
+      text: `Hi ${user.name},\n\nSomeone (hopefully you) asked to reset your password for ${a.name}'s lesson booking.\n\n`
+        + `Choose a new password here. The link works once, for ${RESET_MINUTES} minutes:\n${link}\n\n`
+        + `If you didn't ask for this, ignore this email and your password won't change.`,
+      html: `<p>Hi ${escapeHtml(user.name)},</p><p>Someone (hopefully you) asked to reset your password for ${escapeHtml(a.name)}'s lesson booking.</p>`
+        + `<p><a href="${link}" style="display:inline-block;padding:10px 18px;background:#1f6b3a;color:#fff;border-radius:8px;text-decoration:none">Choose a new password</a></p>`
+        + `<p style="color:#5d6b61;font-size:14px">The link works once, for ${RESET_MINUTES} minutes. If you didn't ask for this, ignore this email and your password won't change.</p>`,
+    }).catch((err) => console.error('Reset email failed:', err));
+  }
+  res.json({ ok: true });
+});
+
+app.post('/api/auth/reset', async (req, res) => {
+  const token = String(req.body.token || '');
+  const password = String(req.body.password || '');
+  if (password.length < 8) fail(400, 'Password must be at least 8 characters');
+  const hash = await bcrypt.hash(password, 12);
+  const user = await db.tx(async (t) => {
+    const r = (await t.query(
+      `UPDATE password_resets SET used_at = now()
+        WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now() RETURNING user_id`, [sha256(token)])).rows[0];
+    if (!r) fail(400, 'This reset link has expired or was already used. Request a new one.');
+    // One reset retires every other outstanding link for the account.
+    await t.query('UPDATE password_resets SET used_at = now() WHERE user_id = $1 AND used_at IS NULL', [r.user_id]);
+    return (await t.query(
+      'UPDATE users SET password_hash = $2, pwv = pwv + 1 WHERE id = $1 AND active RETURNING *', [r.user_id, hash])).rows[0];
+  });
+  if (!user) fail(403, 'This account has been deactivated. Contact the academy.');
+  res.json({ token: signToken(user) });
 });
 
 // ── Shared lookups ───────────────────────────────────────────
@@ -332,18 +399,21 @@ app.get('/api/me', requireAuth, async (req, res) => {
 app.put('/api/me', requireAuth, async (req, res) => {
   const u = req.user;
   const name = str(req.body.name ?? u.name, 'Name', { max: 100 });
-  const phone = str(req.body.phone, 'Phone', { optional: true, max: 40 });
+  const phone = phoneOf(req.body.phone);
   const zelle = isStaff(u) ? str(req.body.zelleHandle, 'Zelle', { optional: true, max: 200 }) : u.zelle_handle;
   let hash = u.password_hash;
+  let pwv = u.pwv;
   if (req.body.newPassword) {
     if (!(await bcrypt.compare(String(req.body.currentPassword || ''), u.password_hash))) fail(400, 'Current password is wrong');
     if (String(req.body.newPassword).length < 8) fail(400, 'New password must be at least 8 characters');
     hash = await bcrypt.hash(String(req.body.newPassword), 12);
+    pwv += 1;
   }
   const user = await db.one(
-    `UPDATE users SET name=$2, phone=$3, zelle_handle=$4, password_hash=$5 WHERE id=$1 RETURNING *`,
-    [u.id, name, phone, zelle, hash]);
-  res.json({ user: publicUser(user) });
+    `UPDATE users SET name=$2, phone=$3, zelle_handle=$4, password_hash=$5, pwv=$6 WHERE id=$1 RETURNING *`,
+    [u.id, name, phone, zelle, hash, pwv]);
+  // A password change signs out other devices; hand this one a fresh token.
+  res.json({ user: publicUser(user), ...(pwv !== u.pwv ? { token: signToken(user) } : {}) });
 });
 
 app.get('/api/locations', requireAuth, async (req, res) => {
@@ -1128,7 +1198,7 @@ app.post('/api/admin/users', requireAuth, requireAdmin, async (req, res) => {
   const u = await db.one(
     `INSERT INTO users (academy_id, name, email, phone, role, password_hash, hourly_rate_cents, private_rate_cents)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-    [req.aid, name, email, str(req.body.phone, 'Phone', { optional: true, max: 40 }), role, await bcrypt.hash(tempPassword, 12),
+    [req.aid, name, email, phoneOf(req.body.phone), role, await bcrypt.hash(tempPassword, 12),
      int(req.body.hourlyRateCents ?? 0, 'Hourly rate', { min: 0, max: 100000 }),
      int(req.body.privateRateCents ?? settings.default_private_rate_cents, 'Private rate', { min: 0, max: 100000 })]);
   res.json({ user: publicUser(u), tempPassword });
@@ -1149,7 +1219,7 @@ app.put('/api/admin/users/:id', requireAuth, requireAdmin, async (req, res) => {
             rated_by = CASE WHEN $5 <> level THEN $10 ELSE rated_by END,
             rated_at = CASE WHEN $5 <> level THEN now() ELSE rated_at END
       WHERE id = $1 RETURNING *`,
-    [u.id, str(b.name ?? u.name, 'Name', { max: 100 }), b.phone !== undefined ? str(b.phone, 'Phone', { optional: true, max: 40 }) : u.phone,
+    [u.id, str(b.name ?? u.name, 'Name', { max: 100 }), b.phone !== undefined ? phoneOf(b.phone) : u.phone,
      role, level,
      int(b.hourlyRateCents ?? u.hourly_rate_cents, 'Hourly rate', { min: 0, max: 100000 }),
      int(b.privateRateCents ?? u.private_rate_cents, 'Private rate', { min: 0, max: 100000 }),
@@ -1161,7 +1231,7 @@ app.put('/api/admin/users/:id', requireAuth, requireAdmin, async (req, res) => {
 // No email is configured yet, so the owner hands the person a temporary password.
 app.post('/api/admin/users/:id/reset-password', requireAuth, requireAdmin, async (req, res) => {
   const tempPassword = genPassword();
-  const u = await db.one('UPDATE users SET password_hash = $3 WHERE id = $1 AND academy_id = $2 RETURNING id',
+  const u = await db.one('UPDATE users SET password_hash = $3, pwv = pwv + 1 WHERE id = $1 AND academy_id = $2 RETURNING id',
     [int(req.params.id, 'User'), req.aid, await bcrypt.hash(tempPassword, 12)]);
   if (!u) fail(404, 'User not found');
   res.json({ tempPassword });
@@ -1300,9 +1370,8 @@ app.put('/api/admin/settings', requireAuth, requireAdmin, async (req, res) => {
   for (const k of NUMERIC_SETTINGS) {
     if (req.body[k] !== undefined) patch[k] = int(req.body[k], k, { min: 0, max: 1000000 });
   }
-  for (const k of ['contact_email', 'contact_phone']) {
-    if (req.body[k] !== undefined) patch[k] = str(req.body[k], k, { optional: true, max: 200 }) || '';
-  }
+  if (req.body.contact_email !== undefined) patch.contact_email = str(req.body.contact_email, 'Contact email', { optional: true, max: 200 }) || '';
+  if (req.body.contact_phone !== undefined) patch.contact_phone = phoneOf(req.body.contact_phone, 'Contact phone') || '';
   const name = req.body.name !== undefined ? str(req.body.name, 'Academy name', { max: 100 }) : req.academy.name;
   const tz = req.body.timezone && validTimezone(req.body.timezone) ? req.body.timezone : req.academy.timezone;
   await db.query('UPDATE academies SET name = $2, timezone = $3, settings = settings || $4::jsonb WHERE id = $1',
@@ -1422,6 +1491,7 @@ app.get('/', page('index.html'));
 app.get('/start', page('start.html'));
 app.get('/platform', page('platform.html'));
 app.get('/a/:slug', page('academy.html'));
+app.get('/a/:slug/reset', page('academy.html'));
 app.get('/a/:slug/app', page('app.html'));
 app.use(express.static(PUBLIC, { index: false }));
 

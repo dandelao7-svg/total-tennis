@@ -574,7 +574,7 @@ VIEWS.setup = async () => {
         <div><label>Academy name</label><input name="name" value="${settings.name}"></div>
         <div><label>Time zone</label><input name="timezone" value="${settings.timezone}"><p class="hint">e.g. America/Los_Angeles</p></div>
         <div><label>Contact email</label><input name="contact_email" value="${st.contact_email}"></div>
-        <div><label>Contact phone</label><input name="contact_phone" value="${st.contact_phone}"></div>
+        <div><label>Contact phone</label><input name="contact_phone" type="tel" value="${st.contact_phone}"></div>
         <div><label>Court fee per private hour ($)</label><input name="court_fee" inputmode="decimal" value="${(st.private_court_fee_cents_per_hour / 100).toFixed(2)}"><p class="hint">What a pro owes the academy per private-lesson hour.</p></div>
         <div><label>Default private rate per hour ($)</label><input name="private_rate" inputmode="decimal" value="${(st.default_private_rate_cents / 100).toFixed(2)}"></div>
         <div><label>Default group size</label><input name="default_group_capacity" type="number" min="1" value="${st.default_group_capacity}"></div>
@@ -720,7 +720,7 @@ async function userModal(id, role) {
     body: html`<div class="form-row">
         <div><label>Name</label><input name="name" value="${u.name || ''}"></div>
         <div><label>Email</label><input name="email" type="email" value="${u.email || ''}" ${raw(isNew ? '' : 'disabled')}></div>
-        <div><label>Phone</label><input name="phone" value="${u.phone || ''}"></div>
+        <div><label>Phone</label><input name="phone" type="tel" value="${u.phone || ''}"></div>
         <div><label>Role</label><select name="role">${['student', 'pro', 'admin'].map((r) => html`<option value="${r}" ${raw(u.role === r ? 'selected' : '')}>${r === 'admin' ? 'Owner/admin' : cap(r)}</option>`)}</select></div>
       </div>
       ${u.role === 'student' ? html`<label>Level</label><select name="level">${['unrated', 'beginner', 'intermediate', 'advanced'].map((l) => html`<option value="${l}" ${raw(u.level === l ? 'selected' : '')}>${cap(l)}</option>`)}</select>` : ''}
@@ -1100,8 +1100,11 @@ document.addEventListener('submit', async (e) => {
       const r = await api('PUT', '/api/me', v); S.me = r.user; toast('Saved');
       document.getElementById('who').textContent = S.me.name;
     } else if (form.dataset.form === 'password') {
-      await api('PUT', '/api/me', { ...v, name: S.me.name, phone: S.me.phone, zelleHandle: S.me.zelleHandle });
-      form.reset(); toast('Password changed');
+      const r = await api('PUT', '/api/me', { ...v, name: S.me.name, phone: S.me.phone, zelleHandle: S.me.zelleHandle });
+      // Changing the password signs out other devices; keep this one signed in.
+      if (r.token) TT.token.set(r.token);
+      form.reset(); form.querySelectorAll('input').forEach((i) => i.dispatchEvent(new Event('input')));
+      toast('Password changed. Other devices have been signed out.');
     } else if (form.dataset.form === 'settings') {
       await api('PUT', '/api/admin/settings', {
         name: v.name, timezone: v.timezone, contact_email: v.contact_email, contact_phone: v.contact_phone,
