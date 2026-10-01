@@ -128,6 +128,11 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--brand); out
 input[type=checkbox] { width: auto; }
 .check { display: flex; gap: 8px; align-items: center; font-weight: 500; }
 .form-row { display: grid; gap: 0 12px; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
+/* Each cell is label / input / hint. Subgrid shares those three rows across
+   the whole line, so a label that wraps to two lines doesn't push its input
+   below its neighbours'. Short labels sit just above their input. */
+.form-row > div { display: grid; grid-row: span 3; grid-template-rows: subgrid; align-content: start; }
+.form-row > div > label { align-self: end; }
 .hint { color: var(--muted); font-size: .85rem; margin-top: 4px; }
 
 button, .btn {
