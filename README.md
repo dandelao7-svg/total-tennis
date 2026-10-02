@@ -57,6 +57,10 @@ With no Stripe keys and `NODE_ENV` not `production`, purchases and subscriptions
 
 In the app: **Setup → Card payments**. The owner pastes their Stripe secret key, and optionally a webhook signing secret for `<APP_URL>/api/stripe/webhook/<academy id>`. The page shows the exact URL. Keys are encrypted at rest. Even without the webhook, credits are issued when the student returns from Stripe Checkout.
 
+## To do
+
+- **Academy shop (merch + stringing).** A "Shop" tab inside the app: the owner adds items (shirts, hats, bottles, towels, balls, grips) with photo, price and sizes; students pay by card into the academy's own Stripe. **Pick up at your next lesson** instead of shipping, and the pro sees "has an item to collect" on the lesson roster. Stringing works the same way: book and pay for a string job, then collect the racquet at the next lesson. For academies that want to ship to non-students, link a ShopSell store instead. Check with Total Tennis Academy's owner and the tester before building.
+
 ## Not built yet
 
 - Booking confirmation and reminder emails (password-reset email is built).
