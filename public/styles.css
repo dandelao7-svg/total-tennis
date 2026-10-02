@@ -208,3 +208,7 @@ code { overflow-wrap: anywhere; word-break: break-word; }
 .pw-eye:focus-visible { outline: 2px solid var(--brand); border-radius: 6px; }
 .pw-rule { color: var(--muted); font-size: .85rem; margin: 4px 0 0; }
 .pw-rule.ok { color: var(--ok); }
+
+/* Top-bar log out: on narrow phones drop the name so the button always fits. */
+.topbar button { flex: none; }
+@media (max-width: 480px) { #who { display: none; } }
