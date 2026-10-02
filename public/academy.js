@@ -49,7 +49,8 @@
     $('err').classList.add('hidden');
     $('info').classList.add('hidden');
     $('links').innerHTML = {
-      login: `${link('forgot', 'Forgot your password?')}<br><span>New student?</span> ${link('signup', 'Create an account')}`,
+      login: `${link('forgot', 'Forgot your password?')}<br><span>New student?</span> ${link('signup', 'Create an account')}`
+        + '<br><span class="muted">Not your academy?</span> <a href="/login?choose=1">Find yours</a>',
       signup: `<span>Already have an account?</span> ${link('login', 'Log in')}`,
       forgot: link('login', 'Back to log in'),
       reset: link('login', 'Back to log in'),

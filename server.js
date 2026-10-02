@@ -282,16 +282,6 @@ app.post('/api/auth/academy-signup', async (req, res) => {
   res.json({ token: signToken(owner), slug });
 });
 
-// 'Find your academy' on /login. Only names and booking addresses come back —
-// the same things anyone sees on an academy's public booking page.
-app.get('/api/academies/search', async (req, res) => {
-  const q = String(req.query.q || '').trim().toLowerCase();
-  if (q.length < 2) return res.json([]);
-  const like = `%${q.replace(/[%_\\]/g, (c) => `\\${c}`)}%`;
-  res.json(await db.many(
-    'SELECT slug, name FROM academies WHERE lower(name) LIKE $1 OR slug LIKE $1 ORDER BY name LIMIT 8', [like]));
-});
-
 app.get('/api/academy/:slug', async (req, res) => {
   const a = await db.one('SELECT * FROM academies WHERE slug = $1', [String(req.params.slug).toLowerCase()]);
   if (!a) fail(404, 'Academy not found');
@@ -364,6 +354,31 @@ app.post('/api/auth/forgot', async (req, res) => {
         + `<p><a href="${link}" style="display:inline-block;padding:10px 18px;background:#1f6b3a;color:#fff;border-radius:8px;text-decoration:none">Choose a new password</a></p>`
         + `<p style="color:#5d6b61;font-size:14px">The link works once, for ${RESET_MINUTES} minutes. If you didn't ask for this, ignore this email and your password won't change.</p>`,
     }).catch((err) => console.error('Reset email failed:', err));
+  }
+  res.json({ ok: true });
+});
+
+// "Email me my login links" on /login. Academies are never listed on screen —
+// the links go only to the inbox of someone with an account — so nobody can
+// browse which academies use the platform. Same answer whether or not it matched.
+app.post('/api/auth/find-academies', async (req, res) => {
+  const addr = String(req.body.email || '').trim().toLowerCase();
+  const rows = addr ? await db.many(
+    `SELECT a.slug, a.name, u.name AS user_name FROM users u JOIN academies a ON a.id = u.academy_id
+      WHERE u.email = $1 AND u.active ORDER BY a.name`, [addr]) : [];
+  if (rows.length) {
+    const origin = originOf(req);
+    const links = rows.map((r) => ({ name: r.name, url: `${origin}/a/${r.slug}` }));
+    await email.sendEmail({
+      to: addr,
+      subject: rows.length === 1 ? `Your ${rows[0].name} login link` : 'Your lesson booking login links',
+      text: `Hi ${rows[0].user_name},\n\nHere's where to log in:\n\n`
+        + links.map((l) => `${l.name}: ${l.url}`).join('\n')
+        + `\n\nBookmark it for next time. If you didn't ask for this, you can ignore this email.`,
+      html: `<p>Hi ${escapeHtml(rows[0].user_name)},</p><p>Here's where to log in:</p>`
+        + links.map((l) => `<p><a href="${l.url}" style="display:inline-block;padding:10px 18px;background:#1f6b3a;color:#fff;border-radius:8px;text-decoration:none">Log in to ${escapeHtml(l.name)}</a></p>`).join('')
+        + `<p style="color:#5d6b61;font-size:14px">Bookmark it for next time. If you didn't ask for this, you can ignore this email.</p>`,
+    }).catch((err) => console.error('Find-academies email failed:', err));
   }
   res.json({ ok: true });
 });
