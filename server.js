@@ -282,6 +282,16 @@ app.post('/api/auth/academy-signup', async (req, res) => {
   res.json({ token: signToken(owner), slug });
 });
 
+// 'Find your academy' on /login. Only names and booking addresses come back —
+// the same things anyone sees on an academy's public booking page.
+app.get('/api/academies/search', async (req, res) => {
+  const q = String(req.query.q || '').trim().toLowerCase();
+  if (q.length < 2) return res.json([]);
+  const like = `%${q.replace(/[%_\\]/g, (c) => `\\${c}`)}%`;
+  res.json(await db.many(
+    'SELECT slug, name FROM academies WHERE lower(name) LIKE $1 OR slug LIKE $1 ORDER BY name LIMIT 8', [like]));
+});
+
 app.get('/api/academy/:slug', async (req, res) => {
   const a = await db.one('SELECT * FROM academies WHERE slug = $1', [String(req.params.slug).toLowerCase()]);
   if (!a) fail(404, 'Academy not found');
@@ -1489,6 +1499,7 @@ const PUBLIC = path.join(__dirname, 'public');
 const page = (file) => (req, res) => res.sendFile(path.join(PUBLIC, file));
 app.get('/', page('index.html'));
 app.get('/start', page('start.html'));
+app.get('/login', page('login.html'));
 app.get('/platform', page('platform.html'));
 app.get('/a/:slug', page('academy.html'));
 app.get('/a/:slug/reset', page('academy.html'));

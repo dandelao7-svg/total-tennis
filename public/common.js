@@ -28,6 +28,14 @@ const TT = (() => {
     set(k, v) { try { localStorage.setItem(k, v); } catch { /* private mode */ } },
     del(k) { try { localStorage.removeItem(k); } catch { /* private mode */ } },
   };
+  // Academies this device has visited, newest first — shown on /login.
+  function recentAcademies() {
+    try { return JSON.parse(store.get('tt_recent_academies') || '[]').slice(0, 5); } catch { return []; }
+  }
+  function rememberAcademy(a) {
+    const list = [{ slug: a.slug, name: a.name }, ...recentAcademies().filter((x) => x.slug !== a.slug)].slice(0, 5);
+    store.set('tt_recent_academies', JSON.stringify(list));
+  }
   const token = {
     get: () => store.get(tokenKey),
     set: (t) => store.set(tokenKey, t),
@@ -268,7 +276,7 @@ const TT = (() => {
 
   return {
     esc, html, raw, slug, token, api, setTz, fmtDay, fmtDate, fmtTime, fmtDateTime, dayKey, money, length, endTime,
-    cap, monthLabel, currentMonth, addMonths, zonedToIso, isoToZoned, toast, modal, confirmBox, formValues, dollarsToCents, formatPhone,
+    cap, monthLabel, currentMonth, addMonths, zonedToIso, isoToZoned, toast, modal, confirmBox, formValues, dollarsToCents, formatPhone, recentAcademies, rememberAcademy,
     get tz() { return tz; },
   };
 })();

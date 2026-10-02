@@ -33,6 +33,7 @@ async function boot() {
     $view.innerHTML = html`<div class="notice error">${err.message}</div>`.s; return;
   }
   TT.setTz(S.academy.timezone);
+  TT.rememberAcademy(S.academy);
   document.title = S.academy.name;
   document.getElementById('acName').textContent = S.academy.name;
   document.getElementById('who').textContent = S.me.name;

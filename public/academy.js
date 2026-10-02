@@ -15,6 +15,7 @@
     $('notFound').classList.remove('hidden');
     return;
   }
+  TT.rememberAcademy(academy);
   document.title = `${academy.name} — Book Lessons`;
   $('acName').textContent = academy.name;
   const contact = [academy.contactEmail, academy.contactPhone].filter(Boolean).join(' · ');
