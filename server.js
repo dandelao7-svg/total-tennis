@@ -421,6 +421,15 @@ app.get('/api/me', requireAuth, async (req, res) => {
   });
 });
 
+// A valid email not already used by someone else at this academy.
+async function freeEmail(aid, value, exceptUserId) {
+  const e = emailOf(value);
+  if (await db.one('SELECT 1 FROM users WHERE academy_id = $1 AND email = $2 AND id <> $3', [aid, e, exceptUserId])) {
+    fail(409, 'Someone at this academy already uses that email');
+  }
+  return e;
+}
+
 app.put('/api/me', requireAuth, async (req, res) => {
   const u = req.user;
   const name = str(req.body.name ?? u.name, 'Name', { max: 100 });
@@ -428,6 +437,15 @@ app.put('/api/me', requireAuth, async (req, res) => {
   const zelle = isStaff(u) ? str(req.body.zelleHandle, 'Zelle', { optional: true, max: 200 }) : u.zelle_handle;
   let hash = u.password_hash;
   let pwv = u.pwv;
+  let newEmail = u.email;
+  if (req.body.email !== undefined && String(req.body.email).trim().toLowerCase() !== u.email) {
+    // Changing the address you log in with needs your password, so an
+    // unattended logged-in phone can't be used to take the account over.
+    if (!(await bcrypt.compare(String(req.body.currentPassword || ''), u.password_hash))) {
+      fail(400, 'Enter your current password to change your email');
+    }
+    newEmail = await freeEmail(req.aid, req.body.email, u.id);
+  }
   if (req.body.newPassword) {
     if (!(await bcrypt.compare(String(req.body.currentPassword || ''), u.password_hash))) fail(400, 'Current password is wrong');
     if (String(req.body.newPassword).length < 8) fail(400, 'New password must be at least 8 characters');
@@ -435,8 +453,8 @@ app.put('/api/me', requireAuth, async (req, res) => {
     pwv += 1;
   }
   const user = await db.one(
-    `UPDATE users SET name=$2, phone=$3, zelle_handle=$4, password_hash=$5, pwv=$6 WHERE id=$1 RETURNING *`,
-    [u.id, name, phone, zelle, hash, pwv]);
+    `UPDATE users SET name=$2, phone=$3, zelle_handle=$4, password_hash=$5, pwv=$6, email=$7 WHERE id=$1 RETURNING *`,
+    [u.id, name, phone, zelle, hash, pwv, newEmail]);
   // A password change signs out other devices; hand this one a fresh token.
   res.json({ user: publicUser(user), ...(pwv !== u.pwv ? { token: signToken(user) } : {}) });
 });
@@ -1238,9 +1256,10 @@ app.put('/api/admin/users/:id', requireAuth, requireAdmin, async (req, res) => {
   if (u.id === req.user.id && (role !== 'admin' || b.active === false)) fail(400, "You can't remove your own owner access");
   const level = b.level ?? u.level;
   if (![...LEVELS, 'unrated'].includes(level)) fail(400, 'Level is invalid');
+  const newEmail = b.email !== undefined ? await freeEmail(req.aid, b.email, u.id) : u.email;
   const out = await db.one(
     `UPDATE users SET name=$2, phone=$3, role=$4, level=$5, hourly_rate_cents=$6, private_rate_cents=$7,
-            zelle_handle=$8, active=$9,
+            zelle_handle=$8, active=$9, email=$11,
             rated_by = CASE WHEN $5 <> level THEN $10 ELSE rated_by END,
             rated_at = CASE WHEN $5 <> level THEN now() ELSE rated_at END
       WHERE id = $1 RETURNING *`,
@@ -1249,7 +1268,7 @@ app.put('/api/admin/users/:id', requireAuth, requireAdmin, async (req, res) => {
      int(b.hourlyRateCents ?? u.hourly_rate_cents, 'Hourly rate', { min: 0, max: 100000 }),
      int(b.privateRateCents ?? u.private_rate_cents, 'Private rate', { min: 0, max: 100000 }),
      b.zelleHandle !== undefined ? str(b.zelleHandle, 'Zelle', { optional: true, max: 200 }) : u.zelle_handle,
-     b.active ?? u.active, req.user.id]);
+     b.active ?? u.active, req.user.id, newEmail]);
   res.json({ user: publicUser(out) });
 });
 

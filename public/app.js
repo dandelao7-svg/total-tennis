@@ -313,7 +313,9 @@ VIEWS.account = async () => {
         <div><label>Name</label><input name="name" value="${u.name}"></div>
         <div><label>Mobile phone</label><input name="phone" type="tel" value="${u.phone || ''}"></div>
       </div>
-      <label>Email</label><input value="${u.email}" disabled>
+      <label>Email</label><input name="email" type="email" autocomplete="email" value="${u.email}" data-orig="${u.email}">
+      <div data-email-confirm class="hidden"><label>Current password (needed to change your email)</label>
+        <input name="currentPassword" type="password" autocomplete="current-password"></div>
       ${u.role !== 'student' ? html`<label>Zelle (email or phone)</label><input name="zelleHandle" value="${u.zelleHandle || ''}">
         <p class="hint">Shown to students who book a private lesson with you.</p>` : ''}
       ${u.role === 'student' ? html`<p style="margin-top:12px">Skill level: ${levelBadge(u.level)}</p>` : ''}
@@ -720,7 +722,7 @@ async function userModal(id, role) {
     title: isNew ? `Add ${role === 'pro' ? 'a pro' : 'a student'}` : `Edit ${u.name}`,
     body: html`<div class="form-row">
         <div><label>Name</label><input name="name" value="${u.name || ''}"></div>
-        <div><label>Email</label><input name="email" type="email" value="${u.email || ''}" ${raw(isNew ? '' : 'disabled')}></div>
+        <div><label>Email</label><input name="email" type="email" value="${u.email || ''}"></div>
         <div><label>Phone</label><input name="phone" type="tel" value="${u.phone || ''}"></div>
         <div><label>Role</label><select name="role">${['student', 'pro', 'admin'].map((r) => html`<option value="${r}" ${raw(u.role === r ? 'selected' : '')}>${r === 'admin' ? 'Owner/admin' : cap(r)}</option>`)}</select></div>
       </div>
@@ -740,7 +742,7 @@ async function userModal(id, role) {
         closeModals();
         showTempPassword(r.user.name, r.user.email, r.tempPassword);
       } else {
-        await api('PUT', `/api/admin/users/${id}`, { ...body, zelleHandle: v.zelleHandle, active: v.active });
+        await api('PUT', `/api/admin/users/${id}`, { ...body, email: v.email, zelleHandle: v.zelleHandle, active: v.active });
         S.pros = null; toast('Saved');
       }
       rerender();
@@ -1088,6 +1090,14 @@ document.addEventListener('change', (e) => {
   })[key]?.();
 });
 
+// Account: ask for the current password only once the email is actually changed.
+document.addEventListener('input', (e) => {
+  const el = e.target;
+  if (!el.matches('input[data-orig]')) return;
+  const box = el.form && el.form.querySelector('[data-email-confirm]');
+  if (box) box.classList.toggle('hidden', el.value.trim().toLowerCase() === el.dataset.orig);
+});
+
 // Forms rendered inside views.
 document.addEventListener('submit', async (e) => {
   const form = e.target.closest('[data-form]');
@@ -1098,8 +1108,11 @@ document.addEventListener('submit', async (e) => {
   btn.disabled = true;
   try {
     if (form.dataset.form === 'profile') {
-      const r = await api('PUT', '/api/me', v); S.me = r.user; toast('Saved');
+      const emailChanged = v.email && v.email.trim().toLowerCase() !== S.me.email;
+      const r = await api('PUT', '/api/me', v); S.me = r.user;
+      toast(emailChanged ? `Saved. Log in with ${S.me.email} from now on.` : 'Saved');
       document.getElementById('who').textContent = S.me.name;
+      if (emailChanged) rerender();
     } else if (form.dataset.form === 'password') {
       const r = await api('PUT', '/api/me', { ...v, name: S.me.name, phone: S.me.phone, zelleHandle: S.me.zelleHandle });
       // Changing the password signs out other devices; keep this one signed in.
