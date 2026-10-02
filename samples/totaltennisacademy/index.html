@@ -1,0 +1,480 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Total Tennis Academy | Tennis Lessons in Thousand Oaks Since 1991</title>
+  <meta name="description" content="Group and private tennis lessons for all ages and levels in Thousand Oaks, Newbury Park, Westlake, Moorpark and Oak Park. Book online. Teaching since 1991.">
+  <meta name="robots" content="noindex">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --green-900: #0d3b23;
+      --green-700: #17643a;
+      --green-500: #2f8f4e;
+      --green-50: #eef6f0;
+      --ball: #d9f24a;
+      --clay: #e0662d;
+      --ink: #14211a;
+      --muted: #56665c;
+      --line: #dbe5dd;
+      --white: #ffffff;
+      --radius: 16px;
+      --display: "Barlow Condensed", "Arial Narrow", system-ui, sans-serif;
+      --body: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+    body { margin: 0; font: 17px/1.6 var(--body); color: var(--ink); background: var(--white); }
+    img, svg { display: block; max-width: 100%; }
+    a { color: var(--green-700); }
+    h1, h2, h3 { font-family: var(--display); line-height: 1.02; margin: 0 0 .5rem; letter-spacing: .01em; }
+    h2 { font-size: clamp(2.1rem, 5vw, 3rem); text-transform: uppercase; }
+    h3 { font-size: 1.55rem; }
+    p { margin: 0 0 1rem; }
+    .wrap { max-width: 1120px; margin: 0 auto; padding: 0 20px; }
+    .eyebrow { font: 700 .8rem/1 var(--body); letter-spacing: .14em; text-transform: uppercase; color: var(--clay); margin-bottom: .75rem; }
+    .lead { font-size: 1.15rem; color: var(--muted); max-width: 640px; }
+    section { padding: 80px 0; }
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: .5rem;
+      min-height: 50px; padding: 0 24px; border-radius: 999px; font: 700 1rem var(--body);
+      text-decoration: none; border: 2px solid transparent; cursor: pointer; white-space: nowrap;
+    }
+    .btn-ball { background: var(--ball); color: var(--green-900); }
+    .btn-ball:hover { background: #e6fa6e; }
+    .btn-ghost { border-color: rgba(255,255,255,.55); color: var(--white); }
+    .btn-ghost:hover { background: rgba(255,255,255,.1); }
+    .btn-green { background: var(--green-700); color: var(--white); }
+    .btn-green:hover { background: var(--green-900); }
+    :focus-visible { outline: 3px solid var(--clay); outline-offset: 3px; }
+
+    /* Sample notice */
+    .sample-bar { background: var(--ink); color: #e9efe9; font-size: .85rem; text-align: center; padding: 8px 16px; }
+    .sample-bar strong { color: var(--ball); }
+
+    /* Header */
+    header { position: sticky; top: 0; z-index: 10; background: rgba(255,255,255,.96); backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); }
+    header .wrap { display: flex; align-items: center; gap: 16px; min-height: 68px; }
+    .logo { display: flex; align-items: center; gap: 10px; text-decoration: none; color: var(--green-900); margin-right: auto; }
+    .logo-ball { width: 34px; height: 34px; flex: none; }
+    .logo-text { font: 800 1.45rem/0.9 var(--display); text-transform: uppercase; letter-spacing: .02em; }
+    .logo-text small { display: block; font: 600 .62rem/1.2 var(--body); letter-spacing: .22em; color: var(--muted); }
+    nav ul { display: flex; gap: 26px; list-style: none; margin: 0; padding: 0; }
+    nav a { color: var(--ink); text-decoration: none; font-weight: 600; font-size: .95rem; }
+    nav a:hover { color: var(--green-700); }
+    .menu-btn { display: none; background: none; border: 0; padding: 8px; color: var(--ink); cursor: pointer; }
+    header .btn { min-height: 44px; padding: 0 18px; }
+
+    /* Hero */
+    .hero { position: relative; overflow: hidden; background: var(--green-700); color: var(--white); padding: 88px 0 96px; }
+    .hero .court { position: absolute; inset: 0; width: 100%; height: 100%; opacity: .22; pointer-events: none; }
+    .hero .wrap { position: relative; display: grid; grid-template-columns: 1.25fr .9fr; gap: 48px; align-items: center; }
+    .hero h1 { font-size: clamp(3rem, 8vw, 5.6rem); text-transform: uppercase; margin-bottom: 1.25rem; }
+    .hero h1 em { font-style: normal; color: var(--ball); }
+    .hero p { font-size: 1.2rem; color: #dcebe0; max-width: 560px; }
+    .hero .actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 28px; }
+    .hero-card { background: var(--white); color: var(--ink); border-radius: 20px; padding: 26px; box-shadow: 0 24px 60px rgba(0,0,0,.25); }
+    .hero-card h3 { color: var(--green-900); }
+    .price-row { display: flex; justify-content: space-between; align-items: baseline; padding: 12px 0; border-bottom: 1px dashed var(--line); gap: 12px; }
+    .price-row:last-of-type { border-bottom: 0; }
+    .price-row span { color: var(--muted); font-size: .95rem; }
+    .price-row strong { font: 800 1.7rem var(--display); color: var(--green-700); white-space: nowrap; }
+    .hero-card .note { font-size: .85rem; color: var(--muted); margin: 10px 0 16px; }
+
+    /* Facts strip */
+    .facts { background: var(--green-900); color: var(--white); padding: 22px 0; }
+    .facts ul { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; list-style: none; margin: 0 auto; padding: 0 20px; }
+    .facts li { display: flex; flex-direction: column; }
+    .facts b { font: 800 1.9rem/1 var(--display); color: var(--ball); }
+    .facts span { font-size: .9rem; color: #c9dccf; }
+
+    /* Programs */
+    .grid { display: grid; gap: 20px; }
+    .programs { grid-template-columns: repeat(3, 1fr); margin-top: 36px; }
+    .card { border: 1px solid var(--line); border-radius: var(--radius); padding: 26px; background: var(--white); display: flex; flex-direction: column; }
+    .card .tag { align-self: flex-start; font: 700 .72rem var(--body); letter-spacing: .1em; text-transform: uppercase; padding: 5px 10px; border-radius: 999px; background: var(--green-50); color: var(--green-700); margin-bottom: 14px; }
+    .card p { color: var(--muted); }
+    .card .cost { margin-top: auto; font-weight: 700; color: var(--green-900); }
+    .card.featured { background: var(--green-50); border-color: #bfdcc7; }
+    .levels { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 14px; }
+    .levels span { font-size: .8rem; font-weight: 600; padding: 3px 10px; border-radius: 999px; background: var(--white); border: 1px solid var(--line); }
+
+    /* How it works */
+    .how { background: var(--green-50); }
+    .steps { grid-template-columns: repeat(4, 1fr); margin-top: 36px; counter-reset: step; }
+    .step { position: relative; padding-top: 58px; }
+    .step::before {
+      counter-increment: step; content: counter(step);
+      position: absolute; top: 0; left: 0; width: 44px; height: 44px; border-radius: 50%;
+      background: var(--ball); color: var(--green-900); font: 800 1.5rem/44px var(--display); text-align: center;
+    }
+    .step p { color: var(--muted); font-size: .97rem; }
+    .how .cta { margin-top: 36px; display: flex; flex-wrap: wrap; gap: 14px; align-items: center; }
+    .how .cta small { color: var(--muted); }
+
+    /* Locations */
+    .locations { grid-template-columns: 1.1fr 1fr; align-items: start; margin-top: 36px; }
+    .loc { border-left: 4px solid var(--green-500); padding: 6px 0 6px 18px; margin-bottom: 24px; }
+    .loc p { color: var(--muted); margin-bottom: .4rem; }
+    .courts { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; margin: 10px 0 8px; max-width: 360px; }
+    .courts span { aspect-ratio: 3 / 4; border-radius: 4px; background: var(--green-500); color: var(--white); font: 700 .85rem var(--display); display: grid; place-items: center; box-shadow: inset 0 0 0 2px rgba(255,255,255,.5); }
+    .cities { background: var(--green-900); color: var(--white); border-radius: var(--radius); padding: 28px; }
+    .cities h3 { color: var(--ball); }
+    .cities ul { list-style: none; padding: 0; margin: 0; columns: 2; }
+    .cities li { padding: 6px 0; font-weight: 600; }
+
+    /* Pros */
+    .pros { grid-template-columns: repeat(3, 1fr); margin-top: 36px; }
+    .pro .photo { aspect-ratio: 4 / 3; border-radius: 12px; background: linear-gradient(135deg, var(--green-500), var(--green-900)); display: grid; place-items: center; color: rgba(255,255,255,.85); font: 800 3rem var(--display); margin-bottom: 16px; }
+    .pro .role { color: var(--clay); font-weight: 700; font-size: .85rem; text-transform: uppercase; letter-spacing: .08em; }
+    .placeholder { border: 2px dashed #c3cfc6; background: repeating-linear-gradient(-45deg, #fafcfa, #fafcfa 10px, #f3f7f4 10px, #f3f7f4 20px); }
+    .placeholder .photo { background: #e3ebe5; color: #9aab9f; font-size: 1rem; font-family: var(--body); font-weight: 600; }
+    .ph-label { font-size: .78rem; font-weight: 700; color: #8a9a8f; text-transform: uppercase; letter-spacing: .08em; }
+
+    /* Reviews */
+    .reviews { grid-template-columns: repeat(3, 1fr); margin-top: 36px; }
+    .review blockquote { margin: 0 0 12px; font-size: 1.05rem; color: #7b8a80; font-style: italic; }
+
+    /* FAQ */
+    .faq { max-width: 820px; margin-top: 28px; }
+    details { border-bottom: 1px solid var(--line); padding: 18px 0; }
+    summary { cursor: pointer; font-weight: 700; font-size: 1.08rem; list-style: none; display: flex; justify-content: space-between; gap: 16px; }
+    summary::-webkit-details-marker { display: none; }
+    summary::after { content: "+"; font: 700 1.5rem/1 var(--body); color: var(--green-700); }
+    details[open] summary::after { content: "–"; }
+    details p { color: var(--muted); margin: 12px 0 0; }
+
+    /* Contact / footer */
+    .contact { background: var(--green-700); color: var(--white); }
+    .contact .wrap { display: grid; grid-template-columns: 1.2fr 1fr; gap: 40px; align-items: center; }
+    .contact h2 { color: var(--white); }
+    .contact p { color: #dcebe0; }
+    .contact-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 14px; }
+    .contact-list a { color: var(--white); font-weight: 700; font-size: 1.25rem; text-decoration: none; }
+    .contact-list span { display: block; color: #bcd6c4; font-size: .85rem; text-transform: uppercase; letter-spacing: .1em; }
+    footer { background: var(--green-900); color: #a9c2b1; font-size: .9rem; padding: 26px 0; }
+    footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; }
+    footer a { color: #d6e6da; }
+
+    /* Mobile sticky book bar */
+    .mobile-book { display: none; }
+
+    @media (max-width: 960px) {
+      .hero .wrap, .locations, .contact .wrap { grid-template-columns: 1fr; }
+      .programs, .pros, .reviews { grid-template-columns: 1fr 1fr; }
+      .steps { grid-template-columns: 1fr 1fr; }
+      .facts ul { grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 820px) {
+      nav { display: none; position: absolute; top: 68px; left: 0; right: 0; background: var(--white); border-bottom: 1px solid var(--line); }
+      nav.open { display: block; }
+      nav ul { flex-direction: column; gap: 0; padding: 8px 20px 16px; }
+      nav a { display: block; padding: 12px 0; font-size: 1.05rem; }
+      .menu-btn { display: block; }
+      header .btn { display: none; }
+    }
+    @media (max-width: 620px) {
+      body { font-size: 16px; padding-bottom: 76px; }
+      section { padding: 56px 0; }
+      .hero { padding: 56px 0 64px; }
+      .programs, .pros, .reviews, .steps { grid-template-columns: 1fr; }
+      .hero .actions .btn { flex: 1; }
+      .courts { max-width: none; }
+      .mobile-book {
+        display: flex; gap: 10px; position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
+        padding: 12px 16px calc(12px + env(safe-area-inset-bottom)); background: var(--white); border-top: 1px solid var(--line);
+        box-shadow: 0 -6px 20px rgba(0,0,0,.08);
+      }
+      .mobile-book .btn { flex: 1; min-height: 48px; }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="sample-bar"><strong>Sample redesign</strong> prepared for Total Tennis Academy. Not the live website. Dashed boxes mark content to fill in.</div>
+
+  <header>
+    <div class="wrap">
+      <a class="logo" href="#top" aria-label="Total Tennis Academy home">
+        <svg class="logo-ball" viewBox="0 0 40 40" aria-hidden="true">
+          <circle cx="20" cy="20" r="19" fill="#d9f24a" stroke="#0d3b23" stroke-width="2"/>
+          <path d="M6 9c7 5 7 17 0 22M34 9c-7 5-7 17 0 22" fill="none" stroke="#ffffff" stroke-width="2.6" stroke-linecap="round"/>
+        </svg>
+        <span class="logo-text">Total Tennis<small>ACADEMY · SINCE 1991</small></span>
+      </a>
+      <nav id="nav" aria-label="Main">
+        <ul>
+          <li><a href="#programs">Programs</a></li>
+          <li><a href="#how">How booking works</a></li>
+          <li><a href="#locations">Locations</a></li>
+          <li><a href="#pros">Our pros</a></li>
+          <li><a href="#contact">Contact</a></li>
+        </ul>
+      </nav>
+      <a class="btn btn-green" data-book href="https://total-tennis-production.up.railway.app/a/dan-s-tennis-academy">Book lessons</a>
+      <button class="menu-btn" id="menuBtn" aria-label="Open menu" aria-expanded="false" aria-controls="nav">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <svg class="court" viewBox="0 0 1200 600" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+        <g fill="none" stroke="#ffffff" stroke-width="4">
+          <rect x="120" y="60" width="960" height="480"/>
+          <line x1="120" y1="120" x2="1080" y2="120"/>
+          <line x1="120" y1="480" x2="1080" y2="480"/>
+          <line x1="600" y1="40" x2="600" y2="560" stroke-width="6"/>
+          <line x1="360" y1="120" x2="360" y2="480"/>
+          <line x1="840" y1="120" x2="840" y2="480"/>
+          <line x1="360" y1="300" x2="840" y2="300"/>
+        </g>
+      </svg>
+      <div class="wrap">
+        <div>
+          <div class="eyebrow" style="color:var(--ball)">Thousand Oaks · Newbury Park · Westlake · Moorpark · Oak Park</div>
+          <h1>Tennis for <em>all ages</em>, every level.</h1>
+          <p>Group classes and private lessons with experienced teaching pros, mostly at Cal Lutheran's courts. Pick your days, pay for the month online, and cancel any time with a credit back.</p>
+          <div class="actions">
+            <a class="btn btn-ball" data-book href="https://total-tennis-production.up.railway.app/a/dan-s-tennis-academy">Book lessons online</a>
+            <a class="btn btn-ghost" href="tel:+18054950111">Call (805) 495-0111</a>
+          </div>
+        </div>
+        <aside class="hero-card" aria-label="Lesson prices">
+          <h3>Simple pricing</h3>
+          <div class="price-row"><span>Group class, 1 hour</span><strong>$22.50</strong></div>
+          <div class="price-row"><span>Group class, 1½ hours</span><strong>$37.50</strong></div>
+          <div class="price-row"><span>Private lesson, 1 hour</span><strong>$100</strong></div>
+          <p class="note">Group classes are bought a month at a time. Private lessons are paid to your pro.</p>
+          <a class="btn btn-green" data-book href="https://total-tennis-production.up.railway.app/a/dan-s-tennis-academy" style="width:100%">See open classes</a>
+        </aside>
+      </div>
+    </section>
+
+    <div class="facts">
+      <ul class="wrap">
+        <li><b>1991</b><span>Teaching in the Conejo Valley</span></li>
+        <li><b>5 cities</b><span>Programs across the area</span></li>
+        <li><b>3 levels</b><span>Beginner, intermediate, advanced</span></li>
+        <li><b>All ages</b><span>Junior and adult programs</span></li>
+      </ul>
+    </div>
+
+    <section id="programs">
+      <div class="wrap">
+        <div class="eyebrow">Programs</div>
+        <h2>Find your game</h2>
+        <p class="lead">Whether you're picking up a racquet for the first time or sharpening a tournament game, there's a program for you.</p>
+        <div class="grid programs">
+          <article class="card featured">
+            <span class="tag">Most popular</span>
+            <h3>Group classes</h3>
+            <div class="levels"><span>Beginner</span><span>Intermediate</span><span>Advanced</span></div>
+            <p>Small groups matched to your level by our pros, so every class is taught at the right pace. Choose the days, times and locations that suit you.</p>
+            <p class="cost">$22.50 / hour · $37.50 / 1½ hours</p>
+          </article>
+          <article class="card">
+            <span class="tag">One-on-one</span>
+            <h3>Private lessons</h3>
+            <p>Focused coaching on exactly what you want to improve. Book an open time with a pro online and pay your pro directly.</p>
+            <p class="cost">$100 / hour</p>
+          </article>
+          <article class="card">
+            <span class="tag">Kids &amp; teens</span>
+            <h3>Junior programs</h3>
+            <p>Fun, structured tennis for young players, from first swings to competitive play.</p>
+            <p class="cost">Ask us about ages and times</p>
+          </article>
+          <article class="card">
+            <span class="tag">Adults</span>
+            <h3>Adult programs</h3>
+            <p>Learn, get back into the game, or stay sharp with players at your level.</p>
+            <p class="cost">Ask us about times</p>
+          </article>
+          <article class="card">
+            <span class="tag">Seasonal</span>
+            <h3>Camps</h3>
+            <p>Tennis camps to build skills fast during school breaks.</p>
+            <p class="cost">Ask us about upcoming dates</p>
+          </article>
+          <article class="card">
+            <span class="tag">Compete</span>
+            <h3>Leagues, tournaments &amp; stringing</h3>
+            <p>Junior and adult leagues, tournaments, and racquet stringing services.</p>
+            <p class="cost">Ask us for details</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="how" class="how">
+      <div class="wrap">
+        <div class="eyebrow">How booking works</div>
+        <h2>Book in minutes, from your phone</h2>
+        <div class="grid steps">
+          <div class="step"><h3>Create an account</h3><p>Sign up online with your name, email and phone. It takes a minute.</p></div>
+          <div class="step"><h3>Get your level</h3><p>One of our pros rates you beginner, intermediate or advanced, so you're always in the right group.</p></div>
+          <div class="step"><h3>Buy the month</h3><p>Pay online for a month of classes. Each class you book uses one lesson credit.</p></div>
+          <div class="step"><h3>Pick your days</h3><p>Choose times and locations at your level. Can't make it? Cancel up to the last minute and keep the credit.</p></div>
+        </div>
+        <div class="cta">
+          <a class="btn btn-green" data-book href="https://total-tennis-production.up.railway.app/a/dan-s-tennis-academy">Create your account</a>
+          <small>Already have one? The same button logs you in.</small>
+        </div>
+      </div>
+    </section>
+
+    <section id="locations">
+      <div class="wrap">
+        <div class="eyebrow">Locations</div>
+        <h2>Where we play</h2>
+        <div class="grid locations">
+          <div>
+            <div class="loc">
+              <h3>Cal Lutheran University</h3>
+              <p>Our home courts. Most classes are taught here.</p>
+              <div class="courts" aria-label="Courts 1 through 7"><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span></div>
+              <p><a href="https://www.google.com/maps/search/?api=1&query=California+Lutheran+University+tennis+courts+Thousand+Oaks" target="_blank" rel="noopener">Directions to Cal Lutheran →</a></p>
+            </div>
+            <div class="loc">
+              <h3>Wildflower Tennis Courts</h3>
+              <p>Additional classes and private lessons.</p>
+              <p><a href="https://www.google.com/maps/search/?api=1&query=Wildflower+tennis+courts+Thousand+Oaks" target="_blank" rel="noopener">Directions to Wildflower →</a></p>
+            </div>
+            <p class="lead" style="font-size:1rem">More locations are added as programs grow. The booking page always shows the current ones.</p>
+          </div>
+          <div class="cities">
+            <h3>Programs across the Conejo Valley</h3>
+            <ul>
+              <li>Thousand Oaks</li>
+              <li>Newbury Park</li>
+              <li>Westlake</li>
+              <li>Moorpark</li>
+              <li>Oak Park</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="pros" style="background:var(--green-50)">
+      <div class="wrap">
+        <div class="eyebrow">Our pros</div>
+        <h2>Coached by experienced pros</h2>
+        <p class="lead">Total Tennis Academy was founded in 1991 by Mike Gennette and has an experienced staff of teaching professionals.</p>
+        <div class="grid pros">
+          <article class="card pro">
+            <div class="photo" aria-hidden="true">MG</div>
+            <div class="role">Founder &amp; owner</div>
+            <h3>Mike Gennette</h3>
+            <p>Founded Total Tennis Academy in 1991. Reach Mike at (805) 495-0111.</p>
+          </article>
+          <article class="card pro placeholder">
+            <div class="photo">Pro photo</div>
+            <div class="ph-label">To fill in</div>
+            <h3>Teaching pro name</h3>
+            <p>A sentence or two about this pro's background and what they love to teach.</p>
+          </article>
+          <article class="card pro placeholder">
+            <div class="photo">Pro photo</div>
+            <div class="ph-label">To fill in</div>
+            <h3>Teaching pro name</h3>
+            <p>A sentence or two about this pro's background and what they love to teach.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="wrap">
+        <div class="eyebrow">Students &amp; parents</div>
+        <h2>What families say</h2>
+        <div class="grid reviews">
+          <figure class="card placeholder review"><span class="ph-label">To fill in</span><blockquote>A real review from a student or parent goes here, e.g. from Google or Yelp.</blockquote><figcaption>— Name, program</figcaption></figure>
+          <figure class="card placeholder review"><span class="ph-label">To fill in</span><blockquote>A real review from a student or parent goes here, e.g. from Google or Yelp.</blockquote><figcaption>— Name, program</figcaption></figure>
+          <figure class="card placeholder review"><span class="ph-label">To fill in</span><blockquote>A real review from a student or parent goes here, e.g. from Google or Yelp.</blockquote><figcaption>— Name, program</figcaption></figure>
+        </div>
+      </div>
+    </section>
+
+    <section id="faq" style="padding-top:0">
+      <div class="wrap">
+        <div class="eyebrow">Questions</div>
+        <h2>Good to know</h2>
+        <div class="faq">
+          <details>
+            <summary>I don't know my level. Where do I start?</summary>
+            <p>Create an account and one of our pros will rate you beginner, intermediate or advanced. A private lesson is a great way to get rated quickly. Once you're rated, you'll see the group classes at your level.</p>
+          </details>
+          <details>
+            <summary>What if I can't make a class?</summary>
+            <p>Cancel online any time before it starts and the class credit goes back to your account, so you can use it on another day.</p>
+          </details>
+          <details>
+            <summary>How do I pay?</summary>
+            <p>Group classes are paid online by card, a month at a time. Private lessons are paid directly to your pro by Zelle.</p>
+          </details>
+          <details>
+            <summary>Do you teach kids?</summary>
+            <p>Yes. We run junior programs, camps and leagues, as well as adult programs. Call or email us to find the right fit.</p>
+          </details>
+          <details>
+            <summary>Do you string racquets?</summary>
+            <p>Yes. Ask us about our stringing services.</p>
+          </details>
+        </div>
+      </div>
+    </section>
+
+    <section id="contact" class="contact">
+      <div class="wrap">
+        <div>
+          <div class="eyebrow" style="color:var(--ball)">Contact</div>
+          <h2>Let's get you on court</h2>
+          <p>Questions about private lessons, camps, classes or leagues? Call or email and we'll help you find the right program.</p>
+          <a class="btn btn-ball" data-book href="https://total-tennis-production.up.railway.app/a/dan-s-tennis-academy">Book lessons online</a>
+        </div>
+        <ul class="contact-list">
+          <li><span>Call</span><a href="tel:+18054950111">(805) 495-0111</a></li>
+          <li><span>Email</span><a href="mailto:info@totaltennisacademy.org">info@totaltennisacademy.org</a></li>
+          <li><span>Serving</span><b>Thousand Oaks, Newbury Park, Westlake, Moorpark &amp; Oak Park</b></li>
+        </ul>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <span>© 2026 Total Tennis Academy · Teaching since 1991</span>
+      <span><a href="#programs">Programs</a> · <a href="#locations">Locations</a> · <a href="#contact">Contact</a></span>
+    </div>
+  </footer>
+
+  <div class="mobile-book">
+    <a class="btn btn-ghost" href="tel:+18054950111" style="color:var(--green-700);border-color:var(--line)">Call</a>
+    <a class="btn btn-green" data-book href="https://total-tennis-production.up.railway.app/a/dan-s-tennis-academy">Book lessons</a>
+  </div>
+
+  <script>
+    // Every "Book lessons" button goes here. Once Total Tennis Academy is set
+    // up in the booking app, change this one line to its own booking link,
+    // e.g. https://total-tennis-production.up.railway.app/a/totaltennis
+    const BOOKING_URL = 'https://total-tennis-production.up.railway.app/a/dan-s-tennis-academy';
+    document.querySelectorAll('[data-book]').forEach((a) => { a.href = BOOKING_URL; });
+
+    const btn = document.getElementById('menuBtn');
+    const nav = document.getElementById('nav');
+    btn.addEventListener('click', () => {
+      const open = nav.classList.toggle('open');
+      btn.setAttribute('aria-expanded', String(open));
+    });
+    nav.addEventListener('click', (e) => {
+      if (e.target.closest('a')) { nav.classList.remove('open'); btn.setAttribute('aria-expanded', 'false'); }
+    });
+  </script>
+</body>
+</html>
