@@ -125,6 +125,7 @@ function publicAcademy(a) {
   return {
     id: a.id, slug: a.slug, name: a.name, timezone: a.timezone,
     contactEmail: s.contact_email, contactPhone: s.contact_phone,
+    privateLabel: s.private_label,
   };
 }
 
@@ -693,9 +694,14 @@ async function bookSession(t, { aid, tz, sessionId, student, enforceLevel }) {
   return booking;
 }
 
-// Cancels a booking and frees its credit. The credit stays good through the end
-// of the month after the lesson's month (if that's later than its expiry).
-async function cancelBooking(t, { academy, bookingId, by }) {
+// Cancels a booking. What happens to the student's credit:
+//   'standard' — it comes back, good through the end of the lesson's month
+//                (plus the academy's credit_grace_months, which may be 0);
+//   'next'     — it comes back, good through the end of the following month
+//                (management's choice, e.g. a late-month rain-out);
+//   'none'     — management decided no credit back; it stays used.
+const CREDIT_MODES = ['standard', 'next', 'none'];
+async function cancelBooking(t, { academy, bookingId, by, credit = 'standard' }) {
   const b = (await t.query(
     `SELECT b.*, to_char(g.starts_at AT TIME ZONE $3, 'YYYY-MM') AS lesson_month
        FROM bookings b JOIN group_sessions g ON g.id = b.session_id
@@ -704,12 +710,65 @@ async function cancelBooking(t, { academy, bookingId, by }) {
   if (!b || b.status !== 'booked') return null;
   await t.query(
     `UPDATE bookings SET status = 'cancelled', cancelled_at = now(), cancelled_by = $2 WHERE id = $1`, [b.id, by]);
-  if (b.credit_id) {
+  if (b.credit_id && credit !== 'none') {
+    const grace = db.settingsOf(academy).credit_grace_months;
     await t.query(
       `UPDATE credits SET booking_id = NULL, expires_on = GREATEST(expires_on, $2::date) WHERE id = $1`,
-      [b.credit_id, endOfMonth(b.lesson_month, db.settingsOf(academy).credit_grace_months)]);
+      [b.credit_id, endOfMonth(b.lesson_month, credit === 'next' ? Math.max(1, grace) : grace)]);
   }
   return b;
+}
+
+// ── Telling students about a cancellation ──
+// Emails every affected student (best effort, never blocks the cancel) and
+// returns their contacts so staff can also copy the phone numbers into a text.
+function creditLine(academy, credit, lessonMonth) {
+  if (credit === 'none') return '';
+  const grace = db.settingsOf(academy).credit_grace_months;
+  const until = endOfMonth(lessonMonth, credit === 'next' ? Math.max(1, grace) : grace);
+  const d = new Date(`${until}T12:00:00Z`).toLocaleDateString('en-US', { month: 'long', day: 'numeric', timeZone: 'UTC' });
+  return `Your lesson credit is back in your account and can be used through ${d}.`;
+}
+function notifyCancelled(academy, items, reason) {
+  const fmt = new Intl.DateTimeFormat('en-US', { timeZone: academy.timezone, weekday: 'long', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  const s = db.settingsOf(academy);
+  for (const it of items) {
+    if (!it.email) continue;
+    const when = fmt.format(new Date(it.startsAt));
+    const lines = [
+      `Hi ${it.name},`, '',
+      `Your ${it.what} on ${when}${it.where ? ` at ${it.where}` : ''} has been cancelled${reason ? ` (${reason})` : ''}.`,
+      it.extra || '', '',
+      `Questions? Contact ${academy.name}${s.contact_phone ? ` at ${s.contact_phone}` : ''}.`,
+    ].filter((l, i, a) => l !== '' || a[i - 1] !== '');
+    email.sendEmail({
+      to: it.email, replyTo: s.contact_email || undefined,
+      subject: `Cancelled: your ${it.what} on ${when}`,
+      text: lines.join('\n'),
+      html: lines.map((l) => (l ? `<p>${escapeHtml(l)}</p>` : '')).join(''),
+    }).catch((err) => console.error('Cancel email failed:', err));
+  }
+}
+const contactsOf = (items) => {
+  const seen = new Map();
+  for (const it of items) if (!seen.has(it.studentId)) seen.set(it.studentId, { name: it.name, phone: it.phone, email: it.email });
+  return [...seen.values()];
+};
+
+// Cancels one group session inside a transaction; returns who was booked.
+async function cancelSessionTx(t, academy, sessionId, { by, reason, credit }) {
+  await t.query(`UPDATE group_sessions SET status = 'cancelled', cancel_reason = $2 WHERE id = $1`, [sessionId, reason]);
+  const rows = (await t.query(
+    `SELECT b.id, u.id AS student_id, u.name, u.phone, u.email, g.starts_at, l.name AS loc, c.name AS court,
+            to_char(g.starts_at AT TIME ZONE $2, 'YYYY-MM') AS lesson_month
+       FROM bookings b JOIN users u ON u.id = b.student_id JOIN group_sessions g ON g.id = b.session_id
+       JOIN courts c ON c.id = g.court_id JOIN locations l ON l.id = c.location_id
+      WHERE b.session_id = $1 AND b.status = 'booked'`, [sessionId, academy.timezone])).rows;
+  for (const b of rows) await cancelBooking(t, { academy, bookingId: b.id, by, credit });
+  return rows.map((b) => ({
+    studentId: b.student_id, name: b.name, phone: b.phone, email: b.email, startsAt: b.starts_at,
+    what: 'group lesson', where: `${b.loc}, ${b.court}`, extra: creditLine(academy, credit, b.lesson_month),
+  }));
 }
 
 app.post('/api/sessions/:id/book', requireAuth, async (req, res) => {
@@ -796,6 +855,17 @@ app.post('/api/private/:id/cancel', requireAuth, async (req, res) => {
   if (p.status === 'cancelled') fail(400, 'Already cancelled');
   if (staffOwner && !req.body.reopen) {
     await db.query(`UPDATE private_lessons SET status = 'cancelled' WHERE id = $1`, [p.id]);
+    if (p.student_id) {
+      const st = await db.one(
+        `SELECT u.id, u.name, u.phone, u.email, l.name AS loc, c.name AS court FROM users u, courts c JOIN locations l ON l.id = c.location_id
+          WHERE u.id = $1 AND c.id = $2`, [p.student_id, p.court_id]);
+      const reason = str(req.body.reason, 'Reason', { optional: true, max: 200 });
+      const items = [{ studentId: st.id, name: st.name, phone: st.phone, email: st.email, startsAt: p.starts_at,
+        what: db.settingsOf(req.academy).private_label.toLowerCase(), where: `${st.loc}, ${st.court}`,
+        extra: 'Please contact your pro to reschedule.' }];
+      if (req.body.notify !== false) notifyCancelled(req.academy, items, reason);
+      return res.json({ ok: true, contacts: contactsOf(items) });
+    }
   } else {
     if (!staffOwner && new Date(p.starts_at) <= new Date()) fail(400, 'This lesson has already started');
     await db.query(
@@ -949,26 +1019,71 @@ app.put('/api/staff/sessions/:id', requireAuth, requireStaff, async (req, res) =
   res.json({ ok: true });
 });
 
-// Cancelling a session (rain, no pro, …) returns every booked student's credit.
+// Cancelling a session (rain, no pro, …). Booked students get their credit back
+// unless the owner chooses otherwise (only the owner decides credit-backs), and
+// are emailed; the reply lists their contacts for a group text.
+const creditModeFor = (req) => (req.user.role === 'admin' && CREDIT_MODES.includes(req.body.credit) ? req.body.credit : 'standard');
 app.post('/api/staff/sessions/:id/cancel', requireAuth, requireStaff, async (req, res) => {
   const s = await staffSession(req);
   if (s.status !== 'scheduled') fail(400, 'Already cancelled');
   const reason = str(req.body.reason, 'Reason', { optional: true, max: 200 });
+  const credit = creditModeFor(req);
   const series = req.body.wholeSeries && s.seriesId;
-  const n = await db.tx(async (t) => {
+  const { n, items } = await db.tx(async (t) => {
     const targets = series
       ? (await t.query(
           `SELECT id FROM group_sessions WHERE academy_id = $1 AND series_id = $2 AND status = 'scheduled' AND starts_at >= $3`,
           [req.aid, s.seriesId, s.startsAt])).rows.map((r) => r.id)
       : [s.id];
-    for (const id of targets) {
-      await t.query(`UPDATE group_sessions SET status = 'cancelled', cancel_reason = $2 WHERE id = $1`, [id, reason]);
-      const bookings = (await t.query(`SELECT id FROM bookings WHERE session_id = $1 AND status = 'booked'`, [id])).rows;
-      for (const b of bookings) await cancelBooking(t, { academy: req.academy, bookingId: b.id, by: req.user.id });
-    }
-    return targets.length;
+    const all = [];
+    for (const id of targets) all.push(...await cancelSessionTx(t, req.academy, id, { by: req.user.id, reason, credit }));
+    return { n: targets.length, items: all };
   });
-  res.json({ cancelled: n });
+  if (req.body.notify !== false) notifyCancelled(req.academy, items, reason);
+  res.json({ cancelled: n, contacts: contactsOf(items), emailed: req.body.notify !== false && email.isConfigured() });
+});
+
+// Owner only: cancel everything on one day (weather), optionally at one location.
+// dryRun: true returns what would be cancelled without changing anything.
+app.post('/api/admin/cancel-day', requireAuth, requireAdmin, async (req, res) => {
+  if (!isDate(req.body.date)) fail(400, 'Pick a date');
+  const reason = str(req.body.reason, 'Reason', { optional: true, max: 200 });
+  const credit = creditModeFor(req);
+  const locationId = req.body.locationId ? int(req.body.locationId, 'Location') : null;
+  // Lessons on that local date that haven't finished yet.
+  const scope = (alias) => `${alias}.academy_id = $1 AND (${alias}.starts_at AT TIME ZONE $2)::date = $3::date
+    AND ${alias}.starts_at + make_interval(mins => ${alias}.duration_minutes) > now()
+    AND ($4::int IS NULL OR c.location_id = $4::int)`;
+  const params = [req.aid, req.tz, req.body.date, locationId];
+  const groups = await db.many(
+    `SELECT g.id, (SELECT count(*)::int FROM bookings b WHERE b.session_id = g.id AND b.status = 'booked') AS booked
+       FROM group_sessions g JOIN courts c ON c.id = g.court_id
+      WHERE ${scope('g')} AND g.status = 'scheduled'`, params);
+  const privs = await db.many(
+    `SELECT p.id, p.student_id, p.starts_at, u.name, u.phone, u.email, l.name AS loc, c.name AS court
+       FROM private_lessons p JOIN courts c ON c.id = p.court_id JOIN locations l ON l.id = c.location_id
+       LEFT JOIN users u ON u.id = p.student_id
+      WHERE ${scope('p')} AND p.status <> 'cancelled'`, params);
+  const summary = {
+    groupLessons: groups.length, privateLessons: privs.length,
+    studentsAffected: groups.reduce((a, g) => a + g.booked, 0) + privs.filter((p) => p.student_id).length,
+  };
+  if (req.body.dryRun) return res.json(summary);
+  const label = db.settingsOf(req.academy).private_label.toLowerCase();
+  const items = await db.tx(async (t) => {
+    const all = [];
+    for (const g of groups) all.push(...await cancelSessionTx(t, req.academy, g.id, { by: req.user.id, reason, credit }));
+    for (const p of privs) {
+      await t.query(`UPDATE private_lessons SET status = 'cancelled' WHERE id = $1`, [p.id]);
+      if (p.student_id) {
+        all.push({ studentId: p.student_id, name: p.name, phone: p.phone, email: p.email, startsAt: p.starts_at,
+          what: label, where: `${p.loc}, ${p.court}`, extra: 'Please contact your pro to reschedule.' });
+      }
+    }
+    return all;
+  });
+  if (req.body.notify !== false) notifyCancelled(req.academy, items, reason);
+  res.json({ ...summary, contacts: contactsOf(items), emailed: req.body.notify !== false && email.isConfigured() });
 });
 
 app.post('/api/staff/sessions/:id/attendance', requireAuth, requireStaff, async (req, res) => {
@@ -1027,6 +1142,36 @@ app.get('/api/staff/students/:id', requireAuth, requireStaff, async (req, res) =
     purchases: admin ? await purchaseList(req.aid, 'p.student_id = $2', [u.id]) : undefined,
     upcoming,
   });
+});
+
+// Staff see both kinds of note; students only ever get 'shared' ones (/api/my/notes).
+const noteList = (aid, studentId, sharedOnly) => db.many(
+  `SELECT n.id, n.visibility, n.body, n.created_at AS "createdAt", a.name AS "authorName", n.author_id AS "authorId"
+     FROM student_notes n JOIN users a ON a.id = n.author_id
+    WHERE n.academy_id = $1 AND n.student_id = $2 ${sharedOnly ? `AND n.visibility = 'shared'` : ''}
+    ORDER BY n.created_at DESC LIMIT 200`, [aid, studentId]);
+
+app.get('/api/staff/students/:id/notes', requireAuth, requireStaff, async (req, res) => {
+  const st = await academyStudent(req, req.params.id);
+  res.json(await noteList(req.aid, st.id, false));
+});
+app.post('/api/staff/students/:id/notes', requireAuth, requireStaff, async (req, res) => {
+  const st = await academyStudent(req, req.params.id);
+  const visibility = req.body.visibility === 'shared' ? 'shared' : 'staff';
+  const n = await db.one(
+    `INSERT INTO student_notes (academy_id, student_id, author_id, visibility, body) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+    [req.aid, st.id, req.user.id, visibility, str(req.body.body, 'Note', { max: 4000 })]);
+  res.json({ id: n.id });
+});
+app.delete('/api/staff/notes/:id', requireAuth, requireStaff, async (req, res) => {
+  const n = await db.one('SELECT * FROM student_notes WHERE id = $1 AND academy_id = $2', [int(req.params.id, 'Note'), req.aid]);
+  if (!n) fail(404, 'Note not found');
+  if (n.author_id !== req.user.id && req.user.role !== 'admin') fail(403, 'Only the note\'s author or the owner can delete it');
+  await db.query('DELETE FROM student_notes WHERE id = $1', [n.id]);
+  res.json({ ok: true });
+});
+app.get('/api/my/notes', requireAuth, async (req, res) => {
+  res.json((await noteList(req.aid, req.user.id, true)).map(({ id, body, createdAt, authorName }) => ({ id, body, createdAt, authorName })));
 });
 
 app.put('/api/staff/students/:id/level', requireAuth, requireStaff, async (req, res) => {
@@ -1416,6 +1561,7 @@ app.put('/api/admin/settings', requireAuth, requireAdmin, async (req, res) => {
   }
   if (req.body.contact_email !== undefined) patch.contact_email = str(req.body.contact_email, 'Contact email', { optional: true, max: 200 }) || '';
   if (req.body.contact_phone !== undefined) patch.contact_phone = phoneOf(req.body.contact_phone, 'Contact phone') || '';
+  if (req.body.private_label !== undefined) patch.private_label = str(req.body.private_label, 'Name for one-on-one bookings', { max: 40 });
   const name = req.body.name !== undefined ? str(req.body.name, 'Academy name', { max: 100 }) : req.academy.name;
   const tz = req.body.timezone && validTimezone(req.body.timezone) ? req.body.timezone : req.academy.timezone;
   await db.query('UPDATE academies SET name = $2, timezone = $3, settings = settings || $4::jsonb WHERE id = $1',

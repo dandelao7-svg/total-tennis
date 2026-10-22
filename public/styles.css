@@ -125,7 +125,7 @@ input, select, textarea {
   background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
 }
 input:focus, select:focus, textarea:focus { outline: 2px solid var(--brand); outline-offset: 0; border-color: var(--brand); }
-input[type=checkbox] { width: auto; }
+input[type=checkbox], input[type=radio] { width: auto; }
 .check { display: flex; gap: 8px; align-items: center; font-weight: 500; }
 .form-row { display: grid; gap: 0 12px; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
 /* Each cell is label / input / hint. Subgrid shares those three rows across

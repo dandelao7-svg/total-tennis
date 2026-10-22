@@ -248,6 +248,19 @@ async function initSchema() {
       paid_by      INT REFERENCES users(id),
       UNIQUE (pro_id, month)
     );
+
+    -- Notes on a student. 'shared' = the student (and parents on that login)
+    -- can read it; 'staff' = pros and the owner only, never sent to students.
+    CREATE TABLE IF NOT EXISTS student_notes (
+      id          SERIAL PRIMARY KEY,
+      academy_id  INT NOT NULL REFERENCES academies(id),
+      student_id  INT NOT NULL REFERENCES users(id),
+      author_id   INT NOT NULL REFERENCES users(id),
+      visibility  TEXT NOT NULL CHECK (visibility IN ('shared','staff')),
+      body        TEXT NOT NULL,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS student_notes_student_idx ON student_notes (academy_id, student_id, created_at DESC);
   `);
 }
 
@@ -261,6 +274,8 @@ const DEFAULT_SETTINGS = {
   default_group_capacity: 6,
   contact_email: '',
   contact_phone: '',
+  // What the academy calls one-on-one bookings, e.g. "Court rental".
+  private_label: 'Private lesson',
 };
 const settingsOf = (academy) => ({ ...DEFAULT_SETTINGS, ...(academy.settings || {}) });
 

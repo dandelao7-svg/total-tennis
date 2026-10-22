@@ -61,7 +61,7 @@ In the app: **Setup → Card payments**. The owner pastes their Stripe secret ke
 
 Change requests from Total Tennis Academy's owner (demo, 2026-10-21), with the answers decided:
 
-**Batch 1 (quick wins)**
+**Batch 1 (quick wins): DONE 2026-10-22** (wording setting in Setup; set "Extra months credits stay valid" to 0 for use it or lose it; texts via copy-numbers / Open in Messages until real texting is set up)
 1. **"Private lesson" → "Court rental"** everywhere, as a per-academy wording setting. (Reason: workers' comp audits.)
 2. **Use it or lose it:** lesson credits expire at the end of the month they were bought for (set credit grace to 0). When a lesson is cancelled for weather, **management decides** whether students get the credit back, and it can be valid into the next month.
 3. **Notes on students:** "Coaching notes" visible to the student/parents (e.g. tournament feedback) and "Staff only" notes visible only to pros and the owner. Staff-only notes must never reach student screens.

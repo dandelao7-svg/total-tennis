@@ -11,12 +11,19 @@ if (!TT.token.get()) location.replace(`/a/${TT.slug}`);
 
 // ── Shell ────────────────────────────────────────────────────
 
-const TABS = {
-  student: [['book', 'Book a lesson'], ['my', 'My lessons'], ['buy', 'Buy lessons'], ['private', 'Private lessons'], ['account', 'Account']],
-  pro: [['sessions', 'My schedule'], ['students', 'Students'], ['privates', 'Private lessons'], ['hours', 'My hours'], ['account', 'Account']],
-  admin: [['dashboard', 'Dashboard'], ['sessions', 'Schedule'], ['students', 'Students'], ['privates', 'Private lessons'],
+// What this academy calls one-on-one bookings: "Private lesson" by default,
+// "Court rental" at academies that prefer it (Setup → Academy settings).
+const PL = () => (S.academy && S.academy.privateLabel) || 'Private lesson';
+const PLs = () => `${PL()}s`;
+const pl = () => PL().toLowerCase();
+const pls = () => PLs().toLowerCase();
+
+const TABS = () => ({
+  student: [['book', 'Book a lesson'], ['my', 'My lessons'], ['buy', 'Buy lessons'], ['private', PLs()], ['account', 'Account']],
+  pro: [['sessions', 'My schedule'], ['students', 'Students'], ['privates', PLs()], ['hours', 'My hours'], ['account', 'Account']],
+  admin: [['dashboard', 'Dashboard'], ['sessions', 'Schedule'], ['students', 'Students'], ['privates', PLs()],
     ['payroll', 'Payroll'], ['payments', 'Payments'], ['setup', 'Setup'], ['billing', 'Billing'], ['account', 'Account']],
-};
+});
 
 function route() {
   const [name, qs] = (location.hash.slice(1) || '').split('?');
@@ -41,7 +48,7 @@ async function boot() {
   render();
 }
 
-function tabsFor() { return TABS[S.me.role] || TABS.student; }
+function tabsFor() { const t = TABS(); return t[S.me.role] || t.student; }
 
 function renderTabs(active) {
   const tabs = tabsFor();
@@ -164,7 +171,7 @@ VIEWS.book = async (params) => {
       <div class="card"><h2>One step first: your skill rating</h2>
       <p>Group lessons are split into beginner, intermediate and advanced. One of our pros will rate your level,
       and you can then book group lessons at that level.</p>
-      <p class="muted">To get rated, book a <a href="#private">private lesson</a> or contact
+      <p class="muted">To get rated, book a <a href="#private">${pl()}</a> or contact
       ${S.academy.contactPhone || S.academy.contactEmail || 'the academy'}.</p></div>`.s;
     return;
   }
@@ -208,8 +215,8 @@ function sessionItemForStudent(s, credits) {
 }
 
 VIEWS.my = async () => {
-  const [upcoming, priv, credits] = await Promise.all([
-    api('GET', '/api/my/bookings'), api('GET', '/api/my/private'), refreshCredits()]);
+  const [upcoming, priv, credits, notes] = await Promise.all([
+    api('GET', '/api/my/bookings'), api('GET', '/api/my/private'), refreshCredits(), api('GET', '/api/my/notes')]);
   const now = Date.now();
   const futurePriv = priv.filter((p) => new Date(p.startsAt).getTime() > now - 3 * 3600e3);
   $view.innerHTML = html`<h1>My lessons</h1>
@@ -219,14 +226,14 @@ VIEWS.my = async () => {
         <div class="main">
           <div class="when">${TT.fmtDateTime(b.startsAt)} <span class="muted small">(${TT.length(b.durationMinutes)})</span></div>
           <div class="small muted">${b.locationName} · ${b.courtName} · with ${b.proName}</div>
-          ${b.status === 'cancelled' ? html`<div class="small" style="color:var(--danger)">Cancelled by the academy${b.cancelReason ? ` (${b.cancelReason})` : ''} — your credit was returned.</div>` : ''}
+          ${b.status === 'cancelled' ? html`<div class="small" style="color:var(--danger)">Cancelled by the academy${b.cancelReason ? ` (${b.cancelReason})` : ''}. Check your credits above.</div>` : ''}
         </div>
         ${levelBadge(b.level)}
         ${b.status === 'scheduled' && b.bookingStatus === 'booked' && new Date(b.startsAt) > now
           ? html`<button class="sm" data-act="cancelBooking" data-id="${b.bookingId}" data-when="${b.startsAt}">Cancel</button>` : ''}
       </div>`)}</div>`
     : html`<div class="empty card">No group lessons booked. <a href="#book">Find a lesson</a></div>`}
-    <h2 style="margin-top:24px">Private lessons</h2>
+    <h2 style="margin-top:24px">${PLs()}</h2>
     ${futurePriv.length ? html`<div class="list">${futurePriv.map((p) => html`<div class="item">
         <div class="main">
           <div class="when">${TT.fmtDateTime(p.startsAt)} <span class="muted small">(${TT.length(p.durationMinutes)})</span></div>
@@ -236,7 +243,11 @@ VIEWS.my = async () => {
         </div>
         ${new Date(p.startsAt) > now ? html`<button class="sm" data-act="cancelPrivate" data-id="${p.id}">Cancel</button>` : ''}
       </div>`)}</div>`
-    : html`<div class="empty card">No private lessons booked. <a href="#private">See open times</a></div>`}
+    : html`<div class="empty card">No ${pls()} booked. <a href="#private">See open times</a></div>`}
+    ${notes.length ? html`<h2 style="margin-top:24px">Notes from your coaches</h2>
+      <div class="list">${notes.map((n) => html`<div class="card" style="margin:0">
+        <div class="small muted">${TT.fmtDate(n.createdAt)} · ${n.authorName}</div>
+        <p style="margin:6px 0 0;white-space:pre-wrap">${n.body}</p></div>`)}</div>` : ''}
     <p style="margin-top:20px"><button class="link" data-act="showPast">Show past lessons</button></p>
     <div id="past"></div>`.s;
 };
@@ -290,9 +301,9 @@ VIEWS.buy = async (params) => {
 VIEWS.private = async () => {
   const [open, mine] = await Promise.all([api('GET', '/api/private/open'), api('GET', '/api/my/private')]);
   const days = groupByDay(open);
-  $view.innerHTML = html`<h1>Private lessons</h1>
+  $view.innerHTML = html`<h1>${PLs()}</h1>
     <p class="muted">Book an open time with one of our pros. You pay the pro directly by Zelle.</p>
-    ${mine.length ? html`<div class="notice info">You have ${mine.length} private lesson${mine.length === 1 ? '' : 's'} booked — see <a href="#my">My lessons</a>.</div>` : ''}
+    ${mine.length ? html`<div class="notice info">You have ${mine.length} ${mine.length === 1 ? pl() : pls()} booked — see <a href="#my">My lessons</a>.</div>` : ''}
     ${days.length ? days.map((d) => html`<div class="day-head">${d.label}</div><div class="list">${d.rows.map((p) => html`<div class="item">
       <div class="main">
         <div class="when">${TT.fmtTime(p.startsAt)} – ${TT.endTime(p.startsAt, p.durationMinutes)}</div>
@@ -317,7 +328,7 @@ VIEWS.account = async () => {
       <div data-email-confirm class="hidden"><label>Current password (needed to change your email)</label>
         <input name="currentPassword" type="password" autocomplete="current-password"></div>
       ${u.role !== 'student' ? html`<label>Zelle (email or phone)</label><input name="zelleHandle" value="${u.zelleHandle || ''}">
-        <p class="hint">Shown to students who book a private lesson with you.</p>` : ''}
+        <p class="hint">Shown to students who book a ${pl()} with you.</p>` : ''}
       ${u.role === 'student' ? html`<p style="margin-top:12px">Skill level: ${levelBadge(u.level)}</p>` : ''}
       <button class="primary" type="submit" style="margin-top:12px">Save</button>
     </form>
@@ -342,7 +353,8 @@ VIEWS.sessions = async (params) => {
   if (level) rows = rows.filter((s) => s.level === level);
   const days = groupByDay(rows);
   $view.innerHTML = html`<div class="row between"><h1>${isAdmin() ? 'Schedule' : 'My schedule'}</h1>
-      <div class="row"><button class="primary" data-act="newSession">+ Group lesson</button></div></div>
+      <div class="row">${isAdmin() ? html`<button data-act="cancelDay">Cancel a day (weather)</button>` : ''}
+        <button class="primary" data-act="newSession">+ Group lesson</button></div></div>
     <div class="row" style="margin-bottom:8px">
       <select data-change="schedScope" style="max-width:200px">
         <option value="mine" ${raw(!everyone ? 'selected' : '')}>My lessons</option>
@@ -398,8 +410,8 @@ VIEWS.privates = async (params) => {
   const month = params.get('month') || '';
   const rows = await api('GET', `/api/staff/private${month ? `?month=${month}` : ''}`);
   const days = groupByDay(rows);
-  $view.innerHTML = html`<div class="row between"><h1>Private lessons</h1>
-      <button class="primary" data-act="newPrivate">+ Private lesson / open time</button></div>
+  $view.innerHTML = html`<div class="row between"><h1>${PLs()}</h1>
+      <button class="primary" data-act="newPrivate">+ ${PL()} / open time</button></div>
     <p class="muted small">Students pay the pro by Zelle. Each lesson owes the academy a court fee of ${money(rows[0] ? rows[0].academyFeeCents * 60 / rows[0].durationMinutes : 2000)}/hr.</p>
     <div class="row" style="margin-bottom:8px">
       <select data-change="privMonth" style="max-width:220px">
@@ -436,7 +448,7 @@ VIEWS.hours = async (params) => {
       <div class="stat"><div class="n">${h.groupHours}</div><div class="l">Group hours taught</div></div>
       <div class="stat"><div class="n">${h.upcomingHours}</div><div class="l">Group hours still scheduled</div></div>
       <div class="stat"><div class="n">${money(h.groupPayCents)}</div><div class="l">Group pay at ${money(h.pro.hourlyRateCents)}/hr</div></div>
-      <div class="stat"><div class="n">${p.n}</div><div class="l">Private lessons</div></div>
+      <div class="stat"><div class="n">${p.n}</div><div class="l">${PLs()}</div></div>
       <div class="stat"><div class="n">${money(p.feeOwedCents)}</div><div class="l">Court fees still owed to academy</div></div>
     </div>
     ${h.payrollPaid ? html`<div class="notice info">Group pay for ${TT.monthLabel(month)} marked paid (${money(h.payrollPaid.amountCents)}) on ${TT.fmtDate(h.payrollPaid.paidAt)}.</div>` : ''}
@@ -496,7 +508,7 @@ VIEWS.payroll = async (params) => {
       <div class="stat"><div class="n">${money(tot.fee)}</div><div class="l">Court fees owed to academy</div></div>
     </div>
     ${r.rows.length ? html`<div class="table-wrap"><table>
-      <tr><th>Pro</th><th class="num">Group hrs</th><th class="num">Rate</th><th class="num">Group pay</th><th class="num">Private lessons</th><th class="num">Court fees owed</th><th>Paid?</th></tr>
+      <tr><th>Pro</th><th class="num">Group hrs</th><th class="num">Rate</th><th class="num">Group pay</th><th class="num">${PLs()}</th><th class="num">Court fees owed</th><th>Paid?</th></tr>
       ${r.rows.map((x) => html`<tr>
         <td><a href="#hours?month=${month}&pro=${x.proId}">${x.name}</a>
           ${x.emptySessions ? html`<div class="small muted">${x.emptySessions} lesson${x.emptySessions === 1 ? '' : 's'} with no students</div>` : ''}
@@ -578,11 +590,13 @@ VIEWS.setup = async () => {
         <div><label>Time zone</label><input name="timezone" value="${settings.timezone}"><p class="hint">e.g. America/Los_Angeles</p></div>
         <div><label>Contact email</label><input name="contact_email" value="${st.contact_email}"></div>
         <div><label>Contact phone</label><input name="contact_phone" type="tel" value="${st.contact_phone}"></div>
-        <div><label>Court fee per private hour ($)</label><input name="court_fee" inputmode="decimal" value="${(st.private_court_fee_cents_per_hour / 100).toFixed(2)}"><p class="hint">What a pro owes the academy per private-lesson hour.</p></div>
-        <div><label>Default private rate per hour ($)</label><input name="private_rate" inputmode="decimal" value="${(st.default_private_rate_cents / 100).toFixed(2)}"></div>
+        <div><label>Court fee per ${pl()} hour ($)</label><input name="court_fee" inputmode="decimal" value="${(st.private_court_fee_cents_per_hour / 100).toFixed(2)}"><p class="hint">What a pro owes the academy per ${pl()} hour.</p></div>
+        <div><label>Default ${pl()} rate per hour ($)</label><input name="private_rate" inputmode="decimal" value="${(st.default_private_rate_cents / 100).toFixed(2)}"></div>
+        <div><label>Name for one-on-one bookings</label><input name="private_label" maxlength="40" value="${st.private_label}">
+          <p class="hint">e.g. Private lesson, or Court rental</p></div>
         <div><label>Default group size</label><input name="default_group_capacity" type="number" min="1" value="${st.default_group_capacity}"></div>
         <div><label>Extra months credits stay valid</label><input name="credit_grace_months" type="number" min="0" max="12" value="${st.credit_grace_months}">
-          <p class="hint">1 = credits bought for October can be used through November.</p></div>
+          <p class="hint">0 = use it or lose it: credits expire at the end of the month they're for. 1 = October credits last through November.</p></div>
       </div>
       <button class="primary" type="submit" style="margin-top:12px">Save settings</button>
     </form>
@@ -683,8 +697,14 @@ async function openSessionModal(id) {
 }
 
 async function studentModal(id) {
-  const d = await api('GET', `/api/staff/students/${id}`);
+  const [d, notes] = await Promise.all([api('GET', `/api/staff/students/${id}`), api('GET', `/api/staff/students/${id}/notes`)]);
   const u = d.user;
+  const noteItem = (n) => html`<div class="card" style="margin:0 0 8px;padding:10px 12px">
+      <div class="row between small"><span>${n.visibility === 'shared'
+        ? html`<span class="badge ok">Student can see</span>` : html`<span class="badge warn">Staff only</span>`}
+        <span class="muted">${TT.fmtDate(n.createdAt)} · ${n.authorName}</span></span>
+        ${n.authorId === S.me.id || isAdmin() ? html`<button class="link small" data-act="deleteNote" data-id="${n.id}" data-student="${u.id}">Delete</button>` : ''}</div>
+      <p style="margin:6px 0 0;white-space:pre-wrap">${n.body}</p></div>`;
   modal({
     title: u.name,
     wide: true,
@@ -698,6 +718,17 @@ async function studentModal(id) {
           <button class="sm" data-act="editUser" data-id="${u.id}">Edit</button>
           <button class="sm" data-act="resetPassword" data-id="${u.id}" data-name="${u.name}">Reset password</button>` : ''}
       </div>
+      <h3 style="margin-top:16px">Notes</h3>
+      <div data-note-form data-student="${u.id}">
+        <textarea name="noteBody" rows="3" placeholder="e.g. Great match Saturday. Work on second serve toss."></textarea>
+        <div class="row" style="margin-top:8px">
+          <label class="check small" style="margin:0"><input type="radio" name="noteVis-${u.id}" value="shared" checked> Student &amp; parents can see</label>
+          <label class="check small" style="margin:0"><input type="radio" name="noteVis-${u.id}" value="staff"> Staff only</label>
+          <span class="spacer"></span>
+          <button type="button" class="sm primary" data-act="addNote" data-student="${u.id}">Add note</button>
+        </div>
+      </div>
+      <div style="margin-top:10px">${notes.length ? notes.map(noteItem) : html`<p class="muted small">No notes yet.</p>`}</div>
       <h3 style="margin-top:16px">Upcoming group lessons</h3>
       ${d.upcoming.length ? html`<ul class="small">${d.upcoming.map((b) => html`<li>${TT.fmtDateTime(b.startsAt)} · ${cap(b.level)} · ${b.locationName} ${b.courtName}</li>`)}</ul>` : html`<p class="muted small">None.</p>`}
       ${d.creditList ? html`<h3 style="margin-top:16px">Credits</h3>
@@ -710,6 +741,40 @@ async function studentModal(id) {
         </table></div>` : html`<p class="muted small">No credits.</p>`}` : ''}
       ${d.purchases && d.purchases.length ? html`<h3 style="margin-top:16px">Purchases</h3><ul class="small">${d.purchases.map((p) =>
         html`<li>${TT.fmtDate(p.createdAt)} · ${p.packName} · ${money(p.amountCents)} · ${p.method === 'stripe' ? 'card' : p.method} · ${p.status}</li>`)}</ul>` : ''}`,
+  });
+}
+
+// Owner only: what students get back when a lesson is cancelled.
+function creditChoice() {
+  return html`<label style="margin-top:12px">Lesson credits</label>
+    <select name="credit">
+      <option value="standard">Give credits back (usual expiry)</option>
+      <option value="next">Give credits back, good through next month</option>
+      <option value="none">No credit back</option>
+    </select>`;
+}
+
+// After a cancellation: everyone affected, with their numbers ready to paste
+// into a group text (or open straight into Messages on a phone).
+function showContacts(contacts, reason, emailed) {
+  const withPhone = contacts.filter((c) => c.phone);
+  const digits = withPhone.map((c) => c.phone.replace(/[^\d+]/g, ''));
+  const message = `${S.academy.name}: your lesson today is cancelled${reason ? ` (${reason})` : ''}. Check the app for your credit. Sorry for the change!`;
+  const smsLink = `sms:${digits.join(',')}?&body=${encodeURIComponent(message)}`;
+  modal({
+    title: `Tell ${contacts.length} student${contacts.length === 1 ? '' : 's'}`,
+    wide: true,
+    body: html`<p class="small">${emailed ? 'Everyone with an email address has been emailed. ' : ''}To text them too, copy the numbers and the message into a group text, or tap "Open in Messages" on your phone.</p>
+      <label>Phone numbers (${withPhone.length})</label>
+      <textarea readonly rows="3" data-copy="numbers">${digits.join(', ')}</textarea>
+      <div class="row" style="margin-top:6px"><button type="button" class="sm" data-act="copyField" data-target="numbers">Copy numbers</button>
+        ${digits.length ? html`<a class="btn sm" href="${smsLink}">Open in Messages</a>` : ''}</div>
+      <label>Message</label>
+      <textarea rows="3" data-copy="message">${message}</textarea>
+      <div class="row" style="margin-top:6px"><button type="button" class="sm" data-act="copyField" data-target="message">Copy message</button></div>
+      ${contacts.length > withPhone.length ? html`<p class="hint">No phone number on file for: ${contacts.filter((c) => !c.phone).map((c) => c.name).join(', ')}</p>` : ''}
+      <details style="margin-top:10px"><summary class="small">Who was affected</summary>
+        <ul class="small">${contacts.map((c) => html`<li>${c.name} · ${c.phone || 'no phone'} · ${c.email || ''}</li>`)}</ul></details>`,
   });
 }
 
@@ -729,7 +794,7 @@ async function userModal(id, role) {
       ${u.role === 'student' ? html`<label>Level</label><select name="level">${['unrated', 'beginner', 'intermediate', 'advanced'].map((l) => html`<option value="${l}" ${raw(u.level === l ? 'selected' : '')}>${cap(l)}</option>`)}</select>` : ''}
       <div class="form-row">
         <div><label>Group-lesson pay per hour ($)</label><input name="hourly" inputmode="decimal" value="${((u.hourlyRateCents || 0) / 100).toFixed(2)}"><p class="hint">What the academy pays this pro.</p></div>
-        <div><label>Private rate per hour ($)</label><input name="private" inputmode="decimal" value="${u.privateRateCents != null ? (u.privateRateCents / 100).toFixed(2) : '100.00'}"><p class="hint">What students pay the pro.</p></div>
+        <div><label>${PL()} rate per hour ($)</label><input name="private" inputmode="decimal" value="${u.privateRateCents != null ? (u.privateRateCents / 100).toFixed(2) : '100.00'}"><p class="hint">What students pay the pro.</p></div>
       </div>
       ${!isNew ? html`<label>Zelle</label><input name="zelleHandle" value="${u.zelleHandle || ''}">
         <label class="check" style="margin-top:12px"><input type="checkbox" name="active" ${raw(u.active ? 'checked' : '')}> Active (can log in)</label>` : ''}`,
@@ -789,7 +854,7 @@ async function privateModal(existingId, currentStudent) {
   const [locs, proList, list] = await Promise.all([locations(), isAdmin() ? pros() : Promise.resolve([]), students()]);
   if (existingId) {
     modal({
-      title: 'Edit private lesson',
+      title: `Edit ${pl()}`,
       body: html`<label>Student</label><select name="studentId">${studentOptions(list, currentStudent, { blank: '— Open for booking —' })}</select>
         <label>Notes</label><input name="notes">
         <div class="row" style="margin-top:14px">
@@ -806,7 +871,7 @@ async function privateModal(existingId, currentStudent) {
   }
   if (!locs.length) { toast('Add a location with courts in Setup first.', true); return; }
   modal({
-    title: 'New private lesson',
+    title: `New ${pl()}`,
     body: html`<p class="muted small">Leave the student blank to post an open time that students can book themselves.</p>
       <label>Starts (${TT.tz.replace('_', ' ')} time)</label>
       <input name="startsAt" type="datetime-local" step="900" value="${defaultStart()}">
@@ -849,14 +914,14 @@ const acts = {
   },
   async bookPrivate(el) {
     const d = el.dataset;
-    const ok = await confirmBox('Book this private lesson?',
+    const ok = await confirmBox(`Book this ${pl()}?`,
       `${TT.fmtDateTime(d.when)} with ${d.pro}. You'll pay ${money(d.price)} to ${d.pro} by Zelle${d.zelle ? ` (${d.zelle})` : ''}.`, 'Book it', false);
     if (!ok) return;
     try { await api('POST', `/api/private/${d.id}/book`); toast('Booked! Details are in My lessons.'); go('my'); }
     catch (err) { toast(err.message, true); rerender(); }
   },
   async cancelPrivate(el) {
-    if (!(await confirmBox('Cancel this private lesson?', 'The time will be released for other students.', 'Cancel lesson'))) return;
+    if (!(await confirmBox(`Cancel this ${pl()}?`, 'The time will be released for other students.', 'Cancel'))) return;
     try { await api('POST', `/api/private/${el.dataset.id}/cancel`); toast('Cancelled'); rerender(); }
     catch (err) { toast(err.message, true); }
   },
@@ -869,6 +934,10 @@ const acts = {
     </table></div>`.s : '<p class="muted">No past lessons yet.</p>';
   },
   logout() { TT.token.clear(); location.replace(`/a/${TT.slug}`); },
+  copyField(el) {
+    const f = el.closest('.modal').querySelector(`[data-copy="${el.dataset.target}"]`);
+    navigator.clipboard?.writeText(f.value).then(() => toast('Copied'), () => { f.select(); toast('Press Ctrl+C to copy', true); });
+  },
   copy(el) {
     navigator.clipboard?.writeText(el.dataset.text).then(() => toast('Link copied'), () => toast('Copy failed — select and copy the link instead', true));
   },
@@ -906,17 +975,70 @@ const acts = {
   },
   async cancelSession(el) {
     const id = el.dataset.id;
+    const booked = Number(el.dataset.booked);
     modal({
       title: 'Cancel this lesson?',
-      body: html`<p>${Number(el.dataset.booked) ? `${el.dataset.booked} booked student(s) get their credit back.` : 'No students are booked.'}</p>
+      body: html`<p>${booked ? `${booked} booked student${booked === 1 ? ' is' : 's are'} emailed.` : 'No students are booked.'}</p>
         <label>Reason (shown to students)</label><input name="reason" placeholder="e.g. Rain">
+        ${isAdmin() ? creditChoice() : html`<p class="hint">Students get their lesson credit back.</p>`}
         ${el.dataset.series ? html`<label class="check" style="margin-top:10px"><input type="checkbox" name="wholeSeries"> Also cancel all later weeks of this weekly lesson</label>` : ''}`,
       submitLabel: 'Cancel lesson', danger: true,
       onSubmit: async (v) => {
         const r = await api('POST', `/api/staff/sessions/${id}/cancel`, v);
         toast(`Cancelled ${r.cancelled} lesson${r.cancelled === 1 ? '' : 's'}`); closeModals(); rerender();
+        if (r.contacts && r.contacts.length) showContacts(r.contacts, v.reason, r.emailed);
       },
     });
+  },
+  async cancelDay() {
+    const locs = await locations();
+    const today = TT.isoToZoned(new Date().toISOString()).slice(0, 10);
+    const back = modal({
+      title: 'Cancel a day (weather)',
+      body: html`<p class="muted small">Cancels every group lesson and ${pl()} on that day that hasn't finished yet. Everyone booked is emailed, and you get their phone numbers for a group text.</p>
+        <div class="form-row">
+          <div><label>Date</label><input name="date" type="date" value="${today}"></div>
+          <div><label>Where</label><select name="locationId"><option value="">All locations</option>${locs.map((l) => html`<option value="${l.id}">${l.name}</option>`)}</select></div>
+        </div>
+        <label>Reason (shown to students)</label><input name="reason" value="Rain">
+        ${creditChoice()}
+        <div class="notice info" data-preview style="margin-top:12px">Checking what's booked…</div>`,
+      submitLabel: 'Cancel these lessons', danger: true,
+      onSubmit: async (v) => {
+        const r = await api('POST', '/api/admin/cancel-day', v);
+        toast(`Cancelled ${r.groupLessons} group lesson${r.groupLessons === 1 ? '' : 's'} and ${r.privateLessons} ${r.privateLessons === 1 ? pl() : pls()}`);
+        closeModals(); rerender();
+        if (r.contacts && r.contacts.length) showContacts(r.contacts, v.reason, r.emailed);
+      },
+    });
+    // Live preview of what the chosen day/location would cancel.
+    const form = back.querySelector('form');
+    const preview = async () => {
+      const v = TT.formValues(form);
+      const box = form.querySelector('[data-preview]');
+      try {
+        const p = await api('POST', '/api/admin/cancel-day', { ...v, dryRun: true });
+        box.textContent = p.groupLessons + p.privateLessons
+          ? `This cancels ${p.groupLessons} group lesson${p.groupLessons === 1 ? '' : 's'} and ${p.privateLessons} ${p.privateLessons === 1 ? pl() : pls()}, affecting ${p.studentsAffected} student booking${p.studentsAffected === 1 ? '' : 's'}.`
+          : 'Nothing left to cancel on that day.';
+      } catch (err) { box.textContent = err.message; }
+    };
+    form.addEventListener('change', preview);
+    preview();
+  },
+  async addNote(el) {
+    const wrap = el.closest('[data-note-form]');
+    const body = wrap.querySelector('textarea').value.trim();
+    if (!body) { toast('Write a note first', true); return; }
+    const visibility = wrap.querySelector('input[type=radio]:checked').value;
+    await api('POST', `/api/staff/students/${el.dataset.student}/notes`, { body, visibility });
+    toast(visibility === 'shared' ? 'Note added. The student can see it.' : 'Staff-only note added');
+    closeModals(); studentModal(el.dataset.student);
+  },
+  async deleteNote(el) {
+    if (!(await confirmBox('Delete this note?', 'It will be removed for everyone.', 'Delete'))) return;
+    await api('DELETE', `/api/staff/notes/${el.dataset.id}`);
+    closeModals(); studentModal(el.dataset.student);
   },
 
   async rate(el) {
@@ -978,10 +1100,19 @@ const acts = {
     try { await api('PUT', `/api/staff/private/${el.dataset.id}`, { feePaid: el.checked }); toast(el.checked ? 'Court fee received' : 'Court fee unmarked'); }
     catch (err) { toast(err.message, true); el.checked = !el.checked; }
   },
-  async cancelPrivateStaff(el) {
-    if (!(await confirmBox('Cancel this private lesson?', 'It will be removed from the schedule.', 'Cancel lesson'))) return;
-    await api('POST', `/api/private/${el.dataset.id}/cancel`, {});
-    closeModals(); toast('Cancelled'); rerender();
+  cancelPrivateStaff(el) {
+    const id = el.dataset.id;
+    modal({
+      title: `Cancel this ${pl()}?`,
+      body: html`<p>It will be removed from the schedule, and the student (if any) is emailed.</p>
+        <label>Reason (shown to the student)</label><input name="reason" placeholder="e.g. Rain">`,
+      submitLabel: 'Cancel it', danger: true,
+      onSubmit: async (v) => {
+        const r = await api('POST', `/api/private/${id}/cancel`, v);
+        closeModals(); toast('Cancelled'); rerender();
+        if (r.contacts && r.contacts.length) showContacts(r.contacts, v.reason, true);
+      },
+    });
   },
 
   async payrollPaid(el) {
@@ -1123,7 +1254,7 @@ document.addEventListener('submit', async (e) => {
       await api('PUT', '/api/admin/settings', {
         name: v.name, timezone: v.timezone, contact_email: v.contact_email, contact_phone: v.contact_phone,
         private_court_fee_cents_per_hour: TT.dollarsToCents(v.court_fee), default_private_rate_cents: TT.dollarsToCents(v.private_rate),
-        default_group_capacity: v.default_group_capacity, credit_grace_months: v.credit_grace_months,
+        default_group_capacity: v.default_group_capacity, credit_grace_months: v.credit_grace_months, private_label: v.private_label,
       });
       const me = await api('GET', '/api/me'); S.academy = me.academy; TT.setTz(S.academy.timezone);
       document.getElementById('acName').textContent = S.academy.name;
