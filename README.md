@@ -59,6 +59,24 @@ In the app: **Setup → Card payments**. The owner pastes their Stripe secret ke
 
 ## To do
 
+Change requests from Total Tennis Academy's owner (demo, 2026-10-21), with the answers decided:
+
+**Batch 1 (quick wins)**
+1. **"Private lesson" → "Court rental"** everywhere, as a per-academy wording setting. (Reason: workers' comp audits.)
+2. **Use it or lose it:** lesson credits expire at the end of the month they were bought for (set credit grace to 0). When a lesson is cancelled for weather, **management decides** whether students get the credit back, and it can be valid into the next month.
+3. **Notes on students:** "Coaching notes" visible to the student/parents (e.g. tournament feedback) and "Staff only" notes visible only to pros and the owner. Staff-only notes must never reach student screens.
+4. **Weather cancellation:** cancel one lesson (exists), owner-only "cancel all lessons today" (optionally per location), email everyone booked, and a "copy phone numbers" button for group texts.
+
+**Batch 2**
+5. **Pro monthly court-hour budget:** owner sets each pro's monthly court-rental hours (default each month); only management can change them; a pro needing more requests it from management, who adjusts; the pro owes the court fee on the budgeted hours at month end; the owner sees fees still owed per pro. Replaces per-lesson court-fee tracking for these pros.
+6. **Card surcharge:** customers paying by card pay the card processing fee so the academy nets the full price; disclosed before payment. Must follow card-network rules (cap ~3%, no surcharge on debit cards) and California pricing law; confirm with a lawyer / Stripe before going live.
+7. **Real text messages** for cancellations (the owner wants texts, not just email): a texting service such as Twilio, which needs US business texting registration (A2P 10DLC) first, taking days to weeks.
+
+**Batch 3**
+8. **Waivers:** annual e-signed waiver per student (parent signs for minors), owner pastes the waiver text, records name/date/version, expires after 12 months, can block booking until signed, QR code to the waiver page. Waiting on the academy's lawyer-written waiver.
+
+Other ideas:
+
 - **Academy shop (merch + stringing).** A "Shop" tab inside the app: the owner adds items (shirts, hats, bottles, towels, balls, grips) with photo, price and sizes; students pay by card into the academy's own Stripe. **Pick up at your next lesson** instead of shipping, and the pro sees "has an item to collect" on the lesson roster. Stringing works the same way: book and pay for a string job, then collect the racquet at the next lesson. For academies that want to ship to non-students, link a ShopSell store instead. Check with Total Tennis Academy's owner and the tester before building.
 
 ## Not built yet
