@@ -1,0 +1,45 @@
+# Hourly uptime check for the tennis app and ShopSell.
+#
+# Each site's /health must answer and report its database as connected. A
+# failed run makes GitHub email the repo owner (GitHub → Settings →
+# Notifications → Actions: "Notify on failed workflows" must stay on).
+#
+# Hourly rather than every few minutes keeps it inside GitHub's free Actions
+# minutes for private repos. For faster alerts or text messages, add a free
+# UptimeRobot monitor on the same /health URLs.
+
+name: Uptime check
+
+on:
+  schedule:
+    - cron: '17 * * * *'   # every hour at :17
+  workflow_dispatch: {}
+
+concurrency:
+  group: uptime
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check every site
+        run: |
+          fail=0
+          # Retries ride out a brief blip so one slow response doesn't alert.
+          check() {
+            url="$1"; want="$2"
+            body=$(curl -s -m 20 --retry 2 --retry-delay 15 --retry-all-errors "$url" || true)
+            if printf '%s' "$body" | grep -q "$want"; then
+              echo "OK    $url"
+            else
+              echo "::error::DOWN  $url  ->  ${body:0:200}"
+              fail=1
+            fi
+          }
+          check https://total-tennis-production.up.railway.app/health '"ok":true'
+          check https://total-tennis-production.up.railway.app/api/academy/tta-demo '"slug"'
+          check https://shopsell-production.up.railway.app/health '"db":"ok"'
+          check https://nextlao.com/health '"db":"ok"'
+          exit $fail
