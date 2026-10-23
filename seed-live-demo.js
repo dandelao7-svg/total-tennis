@@ -3,6 +3,7 @@
 //
 //   node seed-live-demo.js                         live site, address /a/tta-demo
 //   node seed-live-demo.js --base http://localhost:3100 --slug tta-demo
+//   node seed-live-demo.js --slug pentest-a --name "Pen Test Academy A" --out sales/pentest-a-logins.txt
 //
 // Creates an owner, two pros and twelve students (one owner, one pro and one
 // student have the demo login), Cal Lutheran + Wildflower courts, paid lesson
@@ -10,7 +11,7 @@
 // lessons are placed early tomorrow morning so that, by a meeting later that
 // day, they have been taught and show up in Payroll. Run it the evening before.
 //
-// Logins are written to sales/demo-logins.txt (not committed).
+// Logins are written to sales/demo-logins.txt, or the --out file (not committed).
 
 const fs = require('fs');
 const path = require('path');
@@ -20,6 +21,8 @@ const args = process.argv.slice(2);
 const opt = (name, def) => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : def; };
 const BASE = opt('base', 'https://total-tennis-production.up.railway.app').replace(/\/$/, '');
 const SLUG = opt('slug', 'tta-demo');
+const NAME = opt('name', 'Total Tennis Academy (Demo)');
+const OUT = opt('out', path.join('sales', 'demo-logins.txt'));
 const TZ = 'America/Los_Angeles';
 const DOMAIN = `${SLUG}.test`;
 const PASSWORD = `Tennis-Demo-${crypto.randomInt(1000, 9999)}`;
@@ -82,7 +85,7 @@ const STUDENTS = [
 
   // Academy + owner
   const signup = await api(null, 'POST', '/api/auth/academy-signup', {
-    academyName: 'Total Tennis Academy (Demo)', slug: SLUG, name: 'Mike Gennette', phone: '(805) 495-0111',
+    academyName: NAME, slug: SLUG, name: 'Mike Gennette', phone: '(805) 495-0111',
     email: `owner@${DOMAIN}`, password: PASSWORD, timezone: TZ,
   });
   const owner = signup.token;
@@ -187,7 +190,7 @@ const STUDENTS = [
   }
 
   const logins = [
-    `Demo academy: Total Tennis Academy (Demo)`,
+    `Demo academy: ${NAME}`,
     `Log-in page:  ${BASE}/a/${SLUG}`,
     ``,
     `Owner    owner@${DOMAIN}`,
@@ -199,7 +202,7 @@ const STUDENTS = [
     ``,
     `Created ${new Date().toLocaleString('en-US', { timeZone: TZ })} (California time).`,
   ].join('\n');
-  const file = path.join(__dirname, 'sales', 'demo-logins.txt');
+  const file = path.resolve(__dirname, OUT);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, `${logins}\n`);
   console.log(`\nDone. ${sessions.length} group lessons, ${Object.keys(students).length} students.\n`);
