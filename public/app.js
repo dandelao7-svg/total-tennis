@@ -111,6 +111,9 @@ async function refreshCredits() { const me = await api('GET', '/api/me'); S.cred
 
 const levelBadge = (l) => html`<span class="badge ${l}">${cap(l)}</span>`;
 const isAdmin = () => S.me.role === 'admin';
+// Card processing fee on a card payment — the same rounding as the server.
+const surchargeFor = (cents) => Math.round(cents * (S.academy.cardSurchargeBps || 0) / 10000);
+const surchargePct = () => String((S.academy.cardSurchargeBps || 0) / 100);
 
 function groupByDay(rows, key = 'startsAt') {
   const out = [];
@@ -257,23 +260,33 @@ VIEWS.buy = async (params) => {
   if (sp.get('checkout') === 'success' && sp.get('session_id')) {
     try {
       const r = await api('POST', '/api/purchases/confirm', { sessionId: sp.get('session_id') });
-      toast(r.paid ? 'Payment received — your credits are ready.' : 'Payment is processing — credits appear once it clears.');
+      toast(!r.paid ? 'Payment is processing — credits appear once it clears.'
+        : r.renewing ? 'Payment received — your credits are ready, and your monthly plan is on.' : 'Payment received — your credits are ready.');
     } catch (err) { toast(err.message, true); }
     history.replaceState(null, '', `${location.pathname}#buy`);
   } else if (sp.get('checkout') === 'cancelled') {
     toast('Checkout cancelled — nothing was charged.');
     history.replaceState(null, '', `${location.pathname}#buy`);
   }
-  const [packs, credits, purchases] = await Promise.all([api('GET', '/api/packs'), api('GET', '/api/my/credits'), api('GET', '/api/my/purchases')]);
+  const [packs, credits, purchases, plans] = await Promise.all([api('GET', '/api/packs'), api('GET', '/api/my/credits'),
+    api('GET', '/api/my/purchases'), api('GET', '/api/my/renewals')]);
   const cur = TT.currentMonth();
   const month = params.get('month') || cur;
   const byLen = [60, 90].map((m) => ({ m, packs: packs.filter((p) => p.durationMinutes === m) })).filter((g) => g.packs.length);
   const soon = credits.summary.soonest || {};
+  const fee = surchargeFor;
+  const plan = plans.find((p) => ['active', 'past_due', 'creating'].includes(p.status) && !p.turnedOff);
+  const canRenew = S.academy.renewAvailable && !plan;
   $view.innerHTML = html`<h1>Buy lessons</h1>
     <div class="card">
       ${creditPills(credits.summary)}
       ${soon[60] || soon[90] ? html`<p class="hint">${[60, 90].filter((m) => soon[m]).map((m) => `Next ${TT.length(m)} credit expires ${TT.fmtDate(soon[m] + 'T12:00:00Z')}`).join(' · ')}</p>` : ''}
     </div>
+    ${plan ? html`<div class="notice info">Your monthly plan renews <strong>${plan.packName}</strong> on the 1st of each month
+      (next: ${TT.monthLabel(plan.nextMonth)}, ${money(plan.amountCents + plan.surchargeCents)}).
+      To stop it, go to <a href="#account">Account → My monthly plan</a>.</div>` : ''}
+    ${S.academy.cardSurchargeBps ? html`<div class="notice">A <strong>${surchargePct()}% card processing fee</strong> is added when you pay by card,
+      shown below each price. To avoid it, pay ${S.academy.name} by cash, check or Zelle${S.academy.contactPhone ? ` (${S.academy.contactPhone})` : ''} and they'll add your lessons.</div>` : ''}
     <div class="row" style="margin-bottom:12px">
       <label for="buyMonth" style="margin:0">Lessons for</label>
       <select id="buyMonth" data-change="buyMonth" style="max-width:220px">
@@ -286,15 +299,19 @@ VIEWS.buy = async (params) => {
         <h3>${p.name}</h3>
         <div class="price">${money(p.priceCents)}</div>
         <p class="muted small">${p.lessonCount} lesson${p.lessonCount === 1 ? '' : 's'} · ${money(p.priceCents / p.lessonCount)} each</p>
-        <button class="primary block" data-act="buyPack" data-id="${p.id}" data-month="${month}">Buy</button>
+        ${fee(p.priceCents) ? html`<p class="small">By card: ${money(p.priceCents + fee(p.priceCents))} (includes ${money(fee(p.priceCents))} card fee)</p>` : ''}
+        <button class="primary block" data-act="buyPack" data-id="${p.id}" data-month="${month}">Buy ${TT.monthLabel(month)} only</button>
+        ${canRenew ? html`<button class="block" style="margin-top:8px" data-act="buyPack" data-renew="1" data-id="${p.id}" data-month="${month}"
+          data-name="${p.name}" data-total="${p.priceCents + fee(p.priceCents)}">Buy and renew every month</button>` : ''}
       </div>`)}</div>`)}
+    ${canRenew && packs.length ? html`<p class="hint">"Renew every month" charges the same pack on the 1st of each month so you never run out. Turn it off any time under Account.</p>` : ''}
     ${!packs.length ? html`<div class="empty card">No lesson packs are on sale right now.</div>` : ''}
     ${S.academy.devPayments ? html`<p class="hint">Test mode: card payments aren't connected, so purchases complete instantly.</p>` : ''}
     <h2 style="margin-top:24px">Purchase history</h2>
     ${purchases.length ? html`<div class="table-wrap"><table>
       <tr><th>Date</th><th>Pack</th><th>For</th><th class="num">Amount</th><th>Status</th></tr>
-      ${purchases.map((p) => html`<tr><td>${TT.fmtDate(p.createdAt)}</td><td>${p.packName}</td><td>${TT.monthLabel(p.forMonth)}</td>
-        <td class="num">${money(p.amountCents)}</td><td>${p.status === 'paid' ? html`<span class="badge ok">Paid</span>` : html`<span class="badge warn">Pending</span>`}</td></tr>`)}
+      ${purchases.map((p) => html`<tr><td>${TT.fmtDate(p.createdAt)}</td><td>${p.packName}${p.renewalId ? html` <span class="badge">Monthly</span>` : ''}</td><td>${TT.monthLabel(p.forMonth)}</td>
+        <td class="num">${money(p.amountCents + p.surchargeCents)}${p.surchargeCents ? html`<div class="small muted">incl. ${money(p.surchargeCents)} card fee</div>` : ''}</td><td>${p.status === 'paid' ? html`<span class="badge ok">Paid</span>` : html`<span class="badge warn">Pending</span>`}</td></tr>`)}
     </table></div>` : html`<p class="muted">No purchases yet.</p>`}`.s;
 };
 
@@ -317,7 +334,23 @@ VIEWS.private = async () => {
 
 VIEWS.account = async () => {
   const u = S.me;
+  const plans = u.role === 'student' ? await api('GET', '/api/my/renewals') : [];
+  const shown = plans.filter((p) => p.status !== 'canceled').slice(0, 3);
   $view.innerHTML = html`<h1>Account</h1>
+    ${u.role === 'student' && (shown.length || S.academy.renewAvailable) ? html`<section class="card" id="plan">
+      <h2>My monthly plan</h2>
+      ${shown.length ? shown.map((p) => html`<div class="item" style="margin-top:8px">
+        <div class="main">
+          <div><strong>${p.packName}</strong> · ${money(p.amountCents + p.surchargeCents)} a month</div>
+          <div class="small muted">${p.turnedOff ? html`Renewal is <strong>off</strong> — you won't be charged again.`
+            : html`Renews on the 1st of each month. Next charge: ${TT.monthLabel(p.nextMonth)}.`}</div>
+          ${p.status === 'past_due' ? html`<div class="small" style="color:var(--danger)">Your last monthly payment didn't go through. Check the email from Stripe to update your card, or contact the academy.</div>` : ''}
+        </div>
+        ${p.turnedOff ? html`<button class="sm" data-act="renewal" data-id="${p.id}" data-on="1">Turn back on</button>`
+          : html`<button class="sm danger" data-act="renewal" data-id="${p.id}" data-on="0">Turn off monthly renewal</button>`}
+      </div>`) : html`<p class="muted small">You're not on a monthly plan. Choose "Buy and renew every month" on <a href="#buy">Buy lessons</a>
+        and your lessons are bought automatically on the 1st of each month.</p>`}
+    </section>` : ''}
     <form class="card" data-form="profile" novalidate>
       <h2>Your details</h2>
       <div class="form-row">
@@ -329,6 +362,8 @@ VIEWS.account = async () => {
         <input name="currentPassword" type="password" autocomplete="current-password"></div>
       ${u.role !== 'student' ? html`<label>Zelle (email or phone)</label><input name="zelleHandle" value="${u.zelleHandle || ''}">
         <p class="hint">Shown to students who book a ${pl()} with you.</p>` : ''}
+      ${u.role === 'student' && S.academy.smsEnabled ? html`<label class="check small" style="margin-top:12px"><input type="checkbox" name="smsOptIn" ${raw(u.smsOptIn ? 'checked' : '')}>
+        Text me if my lesson is cancelled (e.g. rain). Msg &amp; data rates may apply. Reply STOP to opt out.</label>` : ''}
       ${u.role === 'student' ? html`<p style="margin-top:12px">Skill level: ${levelBadge(u.level)}</p>` : ''}
       <button class="primary" type="submit" style="margin-top:12px">Save</button>
     </form>
@@ -425,10 +460,10 @@ VIEWS.privates = async (params) => {
             ${p.status === 'open' ? html`<span class="badge">Open</span>` : ''}</div>
           <div class="small muted">${p.locationName} · ${p.courtName}${isAdmin() ? ` · ${p.proName}` : ''}</div>
           <div class="small">${p.studentName ? html`<strong>${p.studentName}</strong> ${p.studentPhone || ''}` : 'No student yet'}
-            · ${money(p.priceCents)} (academy fee ${money(p.academyFeeCents)})</div>
+            · ${money(p.priceCents)} ${p.onBudget ? "(court-hour budget)" : `(academy fee ${money(p.academyFeeCents)})`}</div>
         </div>
         ${p.studentId ? html`<label class="check small"><input type="checkbox" data-act="privPaid" data-id="${p.id}" ${raw(p.studentPaid ? 'checked' : '')}> Student paid</label>` : ''}
-        ${p.studentId ? html`<label class="check small"><input type="checkbox" data-act="privFee" data-id="${p.id}" ${raw(p.feePaid ? 'checked' : '')} ${raw(isAdmin() ? '' : 'disabled')}> Court fee in</label>` : ''}
+        ${p.studentId && !p.onBudget ? html`<label class="check small"><input type="checkbox" data-act="privFee" data-id="${p.id}" ${raw(p.feePaid ? 'checked' : '')} ${raw(isAdmin() ? '' : 'disabled')}> Court fee in</label>` : ''}
         <button class="sm" data-act="editPrivate" data-id="${p.id}" data-student="${p.studentId || ''}">Edit</button>
       </div>`)}</div>`)
     : html`<div class="empty card">Nothing here. Post open times so students can book you, or add a lesson you've arranged.</div>`}`.s;
@@ -449,8 +484,9 @@ VIEWS.hours = async (params) => {
       <div class="stat"><div class="n">${h.upcomingHours}</div><div class="l">Group hours still scheduled</div></div>
       <div class="stat"><div class="n">${money(h.groupPayCents)}</div><div class="l">Group pay at ${money(h.pro.hourlyRateCents)}/hr</div></div>
       <div class="stat"><div class="n">${p.n}</div><div class="l">${PLs()}</div></div>
-      <div class="stat"><div class="n">${money(p.feeOwedCents)}</div><div class="l">Court fees still owed to academy</div></div>
+      ${!h.courtBudget ? html`<div class="stat"><div class="n">${money(p.feeOwedCents)}</div><div class="l">Court fees still owed to academy</div></div>` : ''}
     </div>
+    ${h.courtBudget ? courtBudgetCard(h.courtBudget, { proId: h.pro.id, name: h.pro.name, own: !proId }) : ''}
     ${h.payrollPaid ? html`<div class="notice info">Group pay for ${TT.monthLabel(month)} marked paid (${money(h.payrollPaid.amountCents)}) on ${TT.fmtDate(h.payrollPaid.paidAt)}.</div>` : ''}
     <h2>Group lessons in ${TT.monthLabel(month)}</h2>
     ${h.sessions.length ? html`<div class="table-wrap"><table>
@@ -460,6 +496,28 @@ VIEWS.hours = async (params) => {
         <td class="num">${s.booked}</td><td>${s.ended ? html`<span class="badge ok">Taught</span>` : html`<span class="badge">Upcoming</span>`}</td></tr>`)}
     </table></div>` : html`<p class="muted">No group lessons this month.</p>`}`.s;
 };
+
+// A budgeted pro's court hours for one month: on My hours (pro) and a pro's
+// hours page (owner).
+function courtBudgetCard(b, { proId, name, own }) {
+  const pct = b.hours ? Math.min(100, Math.round(b.scheduledHours / b.hours * 100)) : 100;
+  const pending = b.requests.filter((r) => r.status === 'pending');
+  const ended = b.month < TT.currentMonth();
+  return html`<section class="card">
+    <div class="row between"><h2>Court-rental hours — ${TT.monthLabel(b.month)}</h2>
+      ${isAdmin() ? html`<button class="sm" data-act="editBudgetMonth" data-pro="${proId}" data-name="${name}" data-month="${b.month}" data-hours="${b.hours}" data-default="${b.defaultHours}">Change hours</button>` : ''}</div>
+    <p><strong>${b.scheduledHours}</strong> of <strong>${b.hours}</strong> hours on the schedule
+      ${b.changed ? html`<span class="small muted">(usually ${b.defaultHours})</span>` : ''}</p>
+    <div class="meter"><div style="width:${pct}%" class="${b.overBy ? 'over' : ''}"></div></div>
+    ${b.overBy ? html`<div class="notice warn" style="margin-top:8px">${b.overBy} hour${b.overBy === 1 ? '' : 's'} over budget. ${own ? 'Ask management for more hours below.' : 'Management decides whether to add hours.'}</div>` : ''}
+    <p class="small">Court fee on the budget: ${b.hours} hrs × ${money(b.feeCentsPerHour)} = <strong>${money(b.feeCents)}</strong>,
+      ${b.feePaidAt ? html`<span class="badge ok">received ${TT.fmtDate(b.feePaidAt)}</span>` : ended ? html`<span class="badge warn">still owed</span>` : 'due at the end of the month'}.
+      It's owed on the budgeted hours whether or not they're all used.</p>
+    ${pending.length ? html`<p class="small">Waiting for management: ${pending.map((r) => `+${r.hours} hrs`).join(', ')}</p>` : ''}
+    ${b.requests.filter((r) => r.status !== 'pending').slice(0, 3).map((r) => html`<p class="small muted">Request for +${r.hours} hrs ${r.status}.</p>`)}
+    ${own && !ended ? html`<button class="sm" data-act="requestHours" data-month="${b.month}">Ask for more hours</button>` : ''}
+  </section>`;
+}
 
 // ── Admin views ──────────────────────────────────────────────
 
@@ -475,6 +533,8 @@ VIEWS.dashboard = async () => {
   ];
   const todo = steps.filter((x) => !x[0]);
   $view.innerHTML = html`<h1>Dashboard</h1>
+    ${s.courtRequests ? html`<div class="notice info">${s.courtRequests} request${s.courtRequests === 1 ? '' : 's'} for more court hours —
+      <a href="#payroll">answer in Payroll</a>.</div>` : ''}
     <div class="stats">
       <div class="stat"><div class="n">${money(s.revenueCents)}</div><div class="l">Lesson sales in ${TT.monthLabel(s.month)}</div></div>
       <div class="stat"><div class="n">${s.purchases}</div><div class="l">Packs sold this month</div></div>
@@ -500,7 +560,16 @@ VIEWS.payroll = async (params) => {
   const r = await api('GET', `/api/admin/payroll?month=${month}`);
   const tot = r.rows.reduce((a, x) => ({ h: a.h + x.groupHours, pay: a.pay + x.groupPayCents, fee: a.fee + x.courtFeesOwedCents }), { h: 0, pay: 0, fee: 0 });
   $view.innerHTML = html`<h1>Payroll</h1>
-    <p class="muted">Group-lesson hours count once a lesson has ended and wasn't cancelled. Private-lesson court fees are what each pro owes the academy.</p>
+    <p class="muted">Group-lesson hours count once a lesson has ended and wasn't cancelled. Court fees are what each pro owes the academy:
+      per ${pl()} hour, or on their monthly court-hour budget if they have one.</p>
+    ${r.requests.length ? html`<section class="card"><h2>Requests for more court hours</h2><div class="list">
+      ${r.requests.map((q) => html`<div class="item"><div class="main">
+          <div><strong>${q.proName}</strong> asks for <strong>+${q.hours} hrs</strong> in ${TT.monthLabel(q.month)}</div>
+          ${q.reason ? html`<div class="small muted">"${q.reason}"</div>` : ''}
+          <div class="small muted">Asked ${TT.fmtDate(q.createdAt)}</div></div>
+        <button class="sm primary" data-act="answerRequest" data-id="${q.id}" data-approve="1">Approve</button>
+        <button class="sm" data-act="answerRequest" data-id="${q.id}">Decline</button></div>`)}
+    </div></section>` : ''}
     <div class="row" style="margin-bottom:12px"><select data-change="payrollMonth" style="max-width:220px">${monthOptions(month)}</select></div>
     <div class="stats">
       <div class="stat"><div class="n">${tot.h}</div><div class="l">Group hours taught</div></div>
@@ -517,30 +586,70 @@ VIEWS.payroll = async (params) => {
         <td class="num">${x.hourlyRateCents ? money(x.hourlyRateCents) : html`<button class="link small" data-act="editUser" data-id="${x.proId}">Set rate</button>`}</td>
         <td class="num"><strong>${money(x.groupPayCents)}</strong></td>
         <td class="num">${x.privateLessons}</td>
-        <td class="num">${money(x.courtFeesOwedCents)}${x.courtFeesCents > x.courtFeesOwedCents ? html`<div class="small muted">${money(x.courtFeesCents - x.courtFeesOwedCents)} received</div>` : ''}</td>
+        <td class="num">${x.courtBudget ? budgetCell(x, month)
+          : html`${money(x.courtFeesOwedCents)}${x.courtFeesCents > x.courtFeesOwedCents ? html`<div class="small muted">${money(x.courtFeesCents - x.courtFeesOwedCents)} received</div>` : ''}`}</td>
         <td>${x.paid ? html`<span class="badge ok">Paid ${money(x.paid.amountCents)}</span> <button class="link small" data-act="payrollUndo" data-id="${x.proId}" data-month="${month}">Undo</button>`
           : html`<button class="sm" data-act="payrollPaid" data-id="${x.proId}" data-month="${month}" data-name="${x.name}" data-amount="${x.groupPayCents}">Mark paid</button>`}</td>
       </tr>`)}
     </table></div>` : html`<div class="empty card">No pro activity this month.</div>`}`.s;
 };
 
+function budgetCell(x, month) {
+  const b = x.courtBudget;
+  return html`<div><strong>${money(b.feePaidAt ? 0 : b.feeCents)}</strong></div>
+    ${b.feePaidAt ? html`<div class="small muted">${money(b.feeCents)} received</div>` : ''}
+    <div class="small muted">Budget ${b.hours} hrs · ${b.scheduledHours} scheduled</div>
+    ${b.overBy ? html`<div class="small"><span class="badge warn">${b.overBy} hrs over</span></div>` : ''}
+    <div class="small">
+      <button class="link small" data-act="editBudgetMonth" data-pro="${x.proId}" data-name="${x.name}" data-month="${month}" data-hours="${b.hours}" data-default="${b.defaultHours}">Change hours</button> ·
+      <label class="check small" style="display:inline-flex"><input type="checkbox" data-act="budgetFee" data-pro="${x.proId}" data-month="${month}" ${raw(b.feePaidAt ? 'checked' : '')}> Fee in</label>
+    </div>`;
+}
+
 VIEWS.payments = async (params) => {
   const month = params.get('month') || TT.currentMonth();
-  const rows = await api('GET', `/api/admin/purchases?month=${month}`);
+  const [rows, ren] = await Promise.all([api('GET', `/api/admin/purchases?month=${month}`), api('GET', `/api/admin/renewals?month=${month}`)]);
   const paid = rows.filter((r) => r.status === 'paid');
   const total = paid.reduce((a, r) => a + r.amountCents, 0);
+  const fees = paid.reduce((a, r) => a + r.surchargeCents, 0);
   $view.innerHTML = html`<div class="row between"><h1>Payments</h1><button class="primary" data-act="recordPayment">+ Record cash / check / Zelle</button></div>
     <div class="row" style="margin-bottom:12px"><select data-change="paymentsMonth" style="max-width:220px">${monthOptions(month)}</select>
-      <span class="muted">${paid.length} paid · <strong>${money(total)}</strong></span></div>
+      <span class="muted">${paid.length} paid · <strong>${money(total)}</strong>${fees ? ` + ${money(fees)} card fees collected` : ''}</span></div>
     ${rows.length ? html`<div class="table-wrap"><table>
       <tr><th>Date</th><th>Student</th><th>Pack</th><th>For</th><th>Method</th><th class="num">Amount</th><th>Status</th></tr>
       ${rows.map((p) => html`<tr><td>${TT.fmtDate(p.paidAt || p.createdAt)}</td>
         <td><button class="link" data-act="openStudent" data-id="${p.studentId}">${p.studentName}</button></td>
-        <td>${p.packName}</td><td>${TT.monthLabel(p.forMonth)}</td><td>${p.method === 'stripe' ? 'Card' : cap(p.method)}</td>
-        <td class="num">${money(p.amountCents)}</td>
+        <td>${p.packName}${p.renewalId ? html` <span class="badge">Monthly</span>` : ''}</td><td>${TT.monthLabel(p.forMonth)}</td><td>${p.method === 'stripe' ? 'Card' : cap(p.method)}</td>
+        <td class="num">${money(p.amountCents)}${p.surchargeCents ? html`<div class="small muted">+ ${money(p.surchargeCents)} card fee</div>` : ''}</td>
         <td>${p.status === 'paid' ? html`<span class="badge ok">Paid</span>` : html`<span class="badge warn">Pending</span>`}</td></tr>`)}
     </table></div>` : html`<div class="empty card">No payments this month.</div>`}
-    <p class="hint">Refunds for card payments are made in your Stripe dashboard; then remove the matching credits from the student's page.</p>`.s;
+    <p class="hint">Refunds for card payments are made in your Stripe dashboard; then remove the matching credits from the student's page.</p>
+
+    <h2 style="margin-top:24px">Monthly auto-renewal</h2>
+    ${ren.plans.length ? html`<div class="table-wrap"><table>
+      <tr><th>Student</th><th>Pack</th><th class="num">Per month</th><th>Status</th><th></th></tr>
+      ${ren.plans.map((p) => html`<tr>
+        <td><button class="link" data-act="openStudent" data-id="${p.studentId}">${p.studentName}</button></td>
+        <td>${p.packName}</td><td class="num">${money(p.amountCents + p.surchargeCents)}</td>
+        <td>${p.status === 'canceled' ? html`<span class="badge">Ended</span>`
+          : p.turnedOff ? html`<span class="badge">Off — ends after ${TT.monthLabel(TT.addMonths(p.nextMonth, -1))}</span>`
+          : p.status === 'past_due' ? html`<span class="badge danger">Payment failed</span>`
+          : html`<span class="badge ok">On</span> <span class="small muted">next ${TT.monthLabel(p.nextMonth)}</span>`}</td>
+        <td>${p.status === 'canceled' ? '' : p.turnedOff
+          ? html`<button class="sm" data-act="renewal" data-admin="1" data-id="${p.id}" data-on="1">Turn on</button>`
+          : html`<button class="sm" data-act="renewal" data-admin="1" data-id="${p.id}" data-on="0">Turn off</button>`}</td></tr>`)}
+    </table></div>` : html`<p class="muted">${S.academy.renewAvailable ? 'No students on monthly renewal yet.'
+      : 'Monthly renewal turns on once card payments and the Stripe webhook are connected (Setup → Card payments).'}</p>`}
+    ${S.academy.devPayments && ren.plans.length ? html`<p class="hint">Test mode: <button class="link small" data-act="devRenew" data-month="${TT.addMonths(TT.currentMonth(), 1)}">pretend it's the 1st of ${TT.monthLabel(TT.addMonths(TT.currentMonth(), 1))}</button> to run renewals.</p>` : ''}
+
+    <h2 style="margin-top:24px">Not renewed for ${TT.monthLabel(month)}</h2>
+    <p class="muted small">Bought lessons for ${TT.monthLabel(TT.addMonths(month, -1))} but nothing yet for ${TT.monthLabel(month)}, and not on auto-renewal — usually cash or Zelle payers to remind.</p>
+    ${ren.notRenewed.length ? html`<div class="table-wrap"><table>
+      <tr><th>Student</th><th>Last month</th><th>Phone</th><th></th></tr>
+      ${ren.notRenewed.map((s) => html`<tr><td><button class="link" data-act="openStudent" data-id="${s.studentId}">${s.studentName}</button></td>
+        <td class="small">${s.lastPacks}</td><td class="small">${s.phone || '—'}</td>
+        <td><button class="sm" data-act="recordPayment" data-student="${s.studentId}">Record payment</button></td></tr>`)}
+    </table></div>` : html`<p class="muted">Everyone from last month is covered.</p>`}`.s;
 };
 
 VIEWS.setup = async () => {
@@ -563,11 +672,11 @@ VIEWS.setup = async () => {
     <section class="card">
       <div class="row between"><h2>Tennis pros & staff</h2><button class="sm primary" data-act="newUser" data-role="pro">+ Pro</button></div>
       <div class="table-wrap" style="margin-top:8px"><table>
-        <tr><th>Name</th><th>Role</th><th class="num">Group pay/hr</th><th class="num">Private rate/hr</th><th>Zelle</th><th></th></tr>
+        <tr><th>Name</th><th>Role</th><th class="num">Group pay/hr</th><th class="num">Private rate/hr</th><th class="num">Court hrs/month</th><th>Zelle</th><th></th></tr>
         ${[...admins, ...staff].map((u) => html`<tr>
           <td>${u.name}${u.active ? '' : html` <span class="badge">Inactive</span>`}<div class="small muted">${u.email}</div></td>
           <td>${u.role === 'admin' ? 'Owner' : 'Pro'}</td>
-          <td class="num">${money(u.hourlyRateCents)}</td><td class="num">${money(u.privateRateCents)}</td>
+          <td class="num">${money(u.hourlyRateCents)}</td><td class="num">${money(u.privateRateCents)}</td><td class="num">${u.courtBudgetHours ?? "Per lesson"}</td>
           <td class="small">${u.zelleHandle || '—'}</td>
           <td><button class="sm" data-act="editUser" data-id="${u.id}">Edit</button></td></tr>`)}
       </table></div>
@@ -597,7 +706,13 @@ VIEWS.setup = async () => {
         <div><label>Default group size</label><input name="default_group_capacity" type="number" min="1" value="${st.default_group_capacity}"></div>
         <div><label>Extra months credits stay valid</label><input name="credit_grace_months" type="number" min="0" max="12" value="${st.credit_grace_months}">
           <p class="hint">0 = use it or lose it: credits expire at the end of the month they're for. 1 = October credits last through November.</p></div>
+        <div><label>Card processing fee (%)</label><input name="card_surcharge_percent" inputmode="decimal" value="${st.card_surcharge_bps / 100}">
+          <p class="hint">Added to card payments so you net the full price; students see it before paying. 0 = off, at most 3.
+            Card rules don't allow it on debit cards, and some states limit it — check with Stripe or your accountant before turning it on.</p></div>
       </div>
+      <label class="check" style="margin-top:12px"><input type="checkbox" name="sms_enabled" ${raw(st.sms_enabled ? 'checked' : '')}>
+        Text students who opted in when their lesson is cancelled</label>
+      <p class="hint">${settings.smsConfigured ? 'Texting is set up.' : 'Texting isn\'t switched on for the app yet — until then, use the "copy phone numbers" button after cancelling.'}</p>
       <button class="primary" type="submit" style="margin-top:12px">Save settings</button>
     </form>
 
@@ -608,9 +723,15 @@ VIEWS.setup = async () => {
       <details ${raw(settings.stripeConnected ? '' : 'open')}><summary class="small">How to connect</summary>
         <ol class="small">
           <li>Log in at dashboard.stripe.com → <strong>Developers</strong> → <strong>API keys</strong>. Copy the <strong>Secret key</strong> (starts with <code>sk_live_</code>).</li>
-          <li>Recommended: Developers → <strong>Webhooks</strong> → <strong>Add endpoint</strong>, URL <code>${settings.webhookUrl}</code>,
-            event <code>checkout.session.completed</code>. Copy its <strong>Signing secret</strong> (starts with <code>whsec_</code>).</li>
+          <li>Developers → <strong>Webhooks</strong> → <strong>Add destination</strong>, URL <code>${settings.webhookUrl}</code>, with these events:
+            <code>checkout.session.completed</code>, <code>invoice.paid</code>, <code>invoice.payment_failed</code>,
+            <code>customer.subscription.updated</code>, <code>customer.subscription.deleted</code>.
+            Copy its <strong>Signing secret</strong> (starts with <code>whsec_</code>). Monthly auto-renewal only turns on once this is saved.</li>
+          <li>For declined monthly charges: Stripe <strong>Settings → Billing → Subscriptions and emails</strong> → turn on
+            retries and the emails that let a customer update a failed card.</li>
         </ol></details>
+      <p class="small">Monthly auto-renewal: ${settings.renewAvailable ? html`<span class="badge ok">On</span> students can choose "Buy and renew every month".`
+        : html`<span class="badge">Off</span> needs the secret key and the webhook signing secret.`}</p>
       <div class="form-row">
         <div><label>Secret key</label><input name="secretKey" autocomplete="off" placeholder="${settings.stripeConnected ? 'Leave blank to keep current key' : 'sk_live_…'}"></div>
         <div><label>Webhook signing secret ${settings.stripeWebhookSet ? '(saved)' : ''}</label><input name="webhookSecret" autocomplete="off" placeholder="whsec_…"></div>
@@ -757,14 +878,18 @@ function creditChoice() {
 // After a cancellation: everyone affected, with their numbers ready to paste
 // into a group text (or open straight into Messages on a phone).
 function showContacts(contacts, reason, emailed) {
-  const withPhone = contacts.filter((c) => c.phone);
+  const texted = contacts.filter((c) => c.texted);
+  // Students already texted by the app don't need a second text.
+  const withPhone = contacts.filter((c) => c.phone && !c.texted);
   const digits = withPhone.map((c) => c.phone.replace(/[^\d+]/g, ''));
   const message = `${S.academy.name}: your lesson today is cancelled${reason ? ` (${reason})` : ''}. Check the app for your credit. Sorry for the change!`;
   const smsLink = `sms:${digits.join(',')}?&body=${encodeURIComponent(message)}`;
   modal({
     title: `Tell ${contacts.length} student${contacts.length === 1 ? '' : 's'}`,
     wide: true,
-    body: html`<p class="small">${emailed ? 'Everyone with an email address has been emailed. ' : ''}To text them too, copy the numbers and the message into a group text, or tap "Open in Messages" on your phone.</p>
+    body: html`<p class="small">${emailed ? 'Everyone with an email address has been emailed. ' : ''}${texted.length
+        ? `${texted.length} student${texted.length === 1 ? ' who signed up for texts was' : 's who signed up for texts were'} texted automatically. ` : ''}${withPhone.length
+        ? 'To text the rest, copy the numbers and the message into a group text, or tap "Open in Messages" on your phone.' : ''}</p>
       <label>Phone numbers (${withPhone.length})</label>
       <textarea readonly rows="3" data-copy="numbers">${digits.join(', ')}</textarea>
       <div class="row" style="margin-top:6px"><button type="button" class="sm" data-act="copyField" data-target="numbers">Copy numbers</button>
@@ -772,9 +897,9 @@ function showContacts(contacts, reason, emailed) {
       <label>Message</label>
       <textarea rows="3" data-copy="message">${message}</textarea>
       <div class="row" style="margin-top:6px"><button type="button" class="sm" data-act="copyField" data-target="message">Copy message</button></div>
-      ${contacts.length > withPhone.length ? html`<p class="hint">No phone number on file for: ${contacts.filter((c) => !c.phone).map((c) => c.name).join(', ')}</p>` : ''}
+      ${contacts.some((c) => !c.phone) ? html`<p class="hint">No phone number on file for: ${contacts.filter((c) => !c.phone).map((c) => c.name).join(', ')}</p>` : ''}
       <details style="margin-top:10px"><summary class="small">Who was affected</summary>
-        <ul class="small">${contacts.map((c) => html`<li>${c.name} · ${c.phone || 'no phone'} · ${c.email || ''}</li>`)}</ul></details>`,
+        <ul class="small">${contacts.map((c) => html`<li>${c.name} · ${c.phone || 'no phone'} · ${c.email || ''}${c.texted ? ' · texted' : ''}</li>`)}</ul></details>`,
   });
 }
 
@@ -795,12 +920,15 @@ async function userModal(id, role) {
       <div class="form-row">
         <div><label>Group-lesson pay per hour ($)</label><input name="hourly" inputmode="decimal" value="${((u.hourlyRateCents || 0) / 100).toFixed(2)}"><p class="hint">What the academy pays this pro.</p></div>
         <div><label>${PL()} rate per hour ($)</label><input name="private" inputmode="decimal" value="${u.privateRateCents != null ? (u.privateRateCents / 100).toFixed(2) : '100.00'}"><p class="hint">What students pay the pro.</p></div>
+        ${u.role !== 'student' ? html`<div><label>Monthly court-rental hours</label><input name="courtBudget" inputmode="decimal" value="${u.courtBudgetHours ?? ''}" placeholder="Blank = fee per lesson">
+          <p class="hint">The pro owes the court fee on these hours each month, used or not. Blank = court fee per ${pl()} instead.</p></div>` : ''}
       </div>
       ${!isNew ? html`<label>Zelle</label><input name="zelleHandle" value="${u.zelleHandle || ''}">
         <label class="check" style="margin-top:12px"><input type="checkbox" name="active" ${raw(u.active ? 'checked' : '')}> Active (can log in)</label>` : ''}`,
     onSubmit: async (v) => {
       const body = { name: v.name, phone: v.phone, role: v.role, hourlyRateCents: TT.dollarsToCents(v.hourly || 0), privateRateCents: TT.dollarsToCents(v.private || 0) };
       if (v.level) body.level = v.level;
+      if (v.courtBudget !== undefined) body.courtBudgetHours = v.courtBudget.trim();
       if (isNew) {
         const r = await api('POST', '/api/admin/users', { ...body, email: v.email });
         S.pros = null;
@@ -887,6 +1015,7 @@ async function privateModal(existingId, currentStudent) {
     onSubmit: async (v) => {
       const r = await api('POST', '/api/staff/private', { ...v, startsAt: TT.zonedToIso(v.startsAt), studentId: v.studentId || null });
       toast(`Added ${r.created} lesson${r.created === 1 ? '' : 's'}`); rerender();
+      if (r.budgetWarning) setTimeout(() => modal({ title: 'Over the court-hour budget', body: html`<p>${r.budgetWarning}</p>` }), 50);
     },
   });
 }
@@ -905,12 +1034,44 @@ const acts = {
     catch (err) { toast(err.message, true); }
   },
   async buyPack(el) {
-    el.disabled = true;
-    try {
-      const r = await api('POST', '/api/purchases', { packId: el.dataset.id, forMonth: el.dataset.month });
+    const d = el.dataset;
+    const pay = async (body) => {
+      const r = await api('POST', '/api/purchases', { packId: d.id, forMonth: d.month, ...body });
       if (r.url) { location.href = r.url; return; }
-      toast('Purchase complete — credits added.'); rerender();
-    } catch (err) { toast(err.message, true); el.disabled = false; }
+      toast(r.renewing ? 'Purchase complete — credits added, and your monthly plan is on.' : 'Purchase complete — credits added.'); rerender();
+    };
+    if (!d.renew) {
+      el.disabled = true;
+      try { await pay({}); } catch (err) { toast(err.message, true); el.disabled = false; }
+      return;
+    }
+    // Automatic renewal: spell out the terms and get an active "yes" first
+    // (California's automatic-renewal law; the box is never pre-ticked).
+    const next = TT.addMonths(d.month, 1);
+    modal({
+      title: 'Renew every month',
+      body: html`<p><strong>${d.name}</strong> for ${TT.monthLabel(d.month)} is charged now. Then your card is charged
+          <strong>${money(d.total)}</strong> on the 1st of every month, starting ${TT.monthLabel(next)}, for that month's lessons.</p>
+        <p class="small">Turn it off any time under <strong>Account → My monthly plan</strong>. Lessons you've already paid for stay yours.
+          You'll get an email confirming this.</p>
+        <label class="check"><input type="checkbox" name="agree"> I agree to be charged ${money(d.total)} every month until I turn it off.</label>`,
+      submitLabel: 'Continue to payment',
+      onSubmit: async (v) => {
+        if (!v.agree) throw new Error('Tick the box to agree to the monthly charge');
+        await pay({ renew: true, agreeRenew: true });
+      },
+    });
+  },
+  async renewal(el) {
+    const on = el.dataset.on === '1';
+    if (!on && !(await confirmBox('Turn off monthly renewal?',
+      'You won\'t be charged again. Lessons you\'ve already paid for stay in your account until they expire.', 'Turn off'))) return;
+    await api('PUT', `/api/${el.dataset.admin ? 'admin' : 'my'}/renewals/${el.dataset.id}`, { on });
+    toast(on ? 'Monthly renewal is back on' : 'Monthly renewal turned off'); rerender();
+  },
+  async devRenew(el) {
+    const r = await api('POST', '/api/dev/run-renewals', { month: el.dataset.month });
+    toast(`Test: ${r.renewed} renewed, ${r.ended} ended for ${TT.monthLabel(r.month)}`); rerender();
   },
   async bookPrivate(el) {
     const d = el.dataset;
@@ -1120,6 +1281,35 @@ const acts = {
     if (!(await confirmBox(`Mark ${d.name} paid?`, `Records ${money(d.amount)} group-lesson pay for ${TT.monthLabel(d.month)} as paid. Pay them through your usual payroll.`, 'Mark paid', false))) return;
     await api('POST', '/api/admin/payroll/mark-paid', { proId: d.id, month: d.month }); rerender();
   },
+  editBudgetMonth(el) {
+    const d = el.dataset;
+    modal({
+      title: `${d.name}: court hours for ${TT.monthLabel(d.month)}`,
+      body: html`<label>Court-rental hours this month</label><input name="hours" inputmode="decimal" value="${d.hours}">
+        <p class="hint">Usually ${d.default} hrs a month. Leave blank to go back to that. To change every month, use Setup → Edit on the pro.</p>`,
+      onSubmit: async (v) => { await api('PUT', '/api/admin/court-budget', { proId: d.pro, month: d.month, hours: v.hours.trim() }); toast('Hours updated'); rerender(); },
+    });
+  },
+  async budgetFee(el) {
+    try {
+      await api('POST', '/api/admin/court-budget/fee', { proId: el.dataset.pro, month: el.dataset.month, paid: el.checked });
+      toast(el.checked ? 'Court fee received' : 'Court fee unmarked'); rerender();
+    } catch (err) { toast(err.message, true); el.checked = !el.checked; }
+  },
+  requestHours(el) {
+    modal({
+      title: `Ask for more court hours — ${TT.monthLabel(el.dataset.month)}`,
+      body: html`<label>Extra hours</label><input name="hours" inputmode="decimal" placeholder="e.g. 4">
+        <label>Why (optional)</label><input name="reason" maxlength="300" placeholder="e.g. Two new private students">
+        <p class="hint">Management will approve or decline it. The court fee is owed on approved hours.</p>`,
+      submitLabel: 'Send request',
+      onSubmit: async (v) => { await api('POST', '/api/staff/court-requests', { month: el.dataset.month, ...v }); toast('Request sent to management'); rerender(); },
+    });
+  },
+  async answerRequest(el) {
+    await api('POST', `/api/admin/court-requests/${el.dataset.id}`, { approve: el.dataset.approve === '1' });
+    toast(el.dataset.approve === '1' ? 'Approved — hours added' : 'Declined'); rerender();
+  },
   async payrollUndo(el) { await api('POST', '/api/admin/payroll/mark-paid', { proId: el.dataset.id, month: el.dataset.month, undo: true }); rerender(); },
 
   newLocation() {
@@ -1241,7 +1431,8 @@ document.addEventListener('submit', async (e) => {
     if (form.dataset.form === 'profile') {
       const emailChanged = v.email && v.email.trim().toLowerCase() !== S.me.email;
       const r = await api('PUT', '/api/me', v); S.me = r.user;
-      toast(emailChanged ? `Saved. Log in with ${S.me.email} from now on.` : 'Saved');
+      toast(emailChanged ? `Saved. Log in with ${S.me.email} from now on.`
+        : v.smsOptIn && !S.me.smsOptIn ? 'Saved — add a mobile number to get texts' : 'Saved');
       document.getElementById('who').textContent = S.me.name;
       if (emailChanged) rerender();
     } else if (form.dataset.form === 'password') {
@@ -1255,6 +1446,7 @@ document.addEventListener('submit', async (e) => {
         name: v.name, timezone: v.timezone, contact_email: v.contact_email, contact_phone: v.contact_phone,
         private_court_fee_cents_per_hour: TT.dollarsToCents(v.court_fee), default_private_rate_cents: TT.dollarsToCents(v.private_rate),
         default_group_capacity: v.default_group_capacity, credit_grace_months: v.credit_grace_months, private_label: v.private_label,
+        card_surcharge_percent: v.card_surcharge_percent, sms_enabled: v.sms_enabled,
       });
       const me = await api('GET', '/api/me'); S.academy = me.academy; TT.setTz(S.academy.timezone);
       document.getElementById('acName').textContent = S.academy.name;

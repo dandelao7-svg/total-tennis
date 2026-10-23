@@ -11,6 +11,7 @@ const Stripe    = require('stripe');
 const db        = require('./db');
 const { encrypt, decrypt, isConfigured: encryptionConfigured } = require('./lib/crypto');
 const email     = require('./lib/email');
+const sms       = require('./lib/sms');
 
 const PROD = process.env.NODE_ENV === 'production';
 // In production, refuse to start half-configured — and name everything that's
@@ -111,6 +112,8 @@ function publicUser(u) {
     level: u.level, levelNotes: u.level_notes, ratedAt: u.rated_at,
     hourlyRateCents: u.hourly_rate_cents, privateRateCents: u.private_rate_cents,
     zelleHandle: u.zelle_handle, active: u.active, createdAt: u.created_at,
+    smsOptIn: u.sms_opt_in,
+    courtBudgetHours: u.court_budget_hours == null ? null : Number(u.court_budget_hours),
   };
 }
 
@@ -126,8 +129,13 @@ function publicAcademy(a) {
     id: a.id, slug: a.slug, name: a.name, timezone: a.timezone,
     contactEmail: s.contact_email, contactPhone: s.contact_phone,
     privateLabel: s.private_label,
+    cardSurchargeBps: s.card_surcharge_bps,
+    smsEnabled: !!s.sms_enabled,
   };
 }
+
+// The card processing fee added to a card payment of `cents`.
+const surchargeOf = (academy, cents) => Math.round(cents * db.settingsOf(academy).card_surcharge_bps / 10000);
 
 // ── Each academy's own Stripe (students paying the academy) ──
 
@@ -214,7 +222,10 @@ app.post('/api/stripe/webhook/:academyId', express.raw({ type: 'application/json
     const s = event.data.object;
     if (s.payment_status === 'paid' && s.metadata && s.metadata.purchase_id) {
       await fulfillPurchase(a, Number(s.metadata.purchase_id), s.id);
+      if (s.metadata.renew === '1') await startRenewal(a, Number(s.metadata.purchase_id), s);
     }
+  } else if (['invoice.paid', 'invoice.payment_failed', 'customer.subscription.updated', 'customer.subscription.deleted'].includes(event.type)) {
+    await renewalWebhook(a, event);
   }
   res.json({ received: true });
 });
@@ -309,8 +320,8 @@ app.post('/api/auth/signup', async (req, res) => {
     fail(409, 'An account with that email already exists — try logging in');
   }
   const user = await db.one(
-    `INSERT INTO users (academy_id, name, email, phone, password_hash) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-    [a.id, name, email, phone, await bcrypt.hash(password, 12)]);
+    `INSERT INTO users (academy_id, name, email, phone, password_hash, sms_opt_in) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+    [a.id, name, email, phone, await bcrypt.hash(password, 12), req.body.smsOptIn === true && !!phone]);
   res.json({ token: signToken(user), user: publicUser(user) });
 });
 
@@ -418,9 +429,15 @@ app.get('/api/me', requireAuth, async (req, res) => {
       stripeConnected: !!a.stripe_secret_enc,
       // Local development only: purchases complete without Stripe.
       devPayments: !a.stripe_secret_enc && !PROD,
+      renewAvailable: renewAvailable(a),
+      smsAvailable: sms.isConfigured() || !PROD,
     },
   });
 });
+
+// Monthly auto-renewal needs the webhook: renewals are charged while nobody
+// has the app open, and only the webhook tells us they were paid.
+const renewAvailable = (a) => (a.stripe_secret_enc ? !!a.stripe_webhook_secret_enc : !PROD);
 
 // A valid email not already used by someone else at this academy.
 async function freeEmail(aid, value, exceptUserId) {
@@ -453,9 +470,10 @@ app.put('/api/me', requireAuth, async (req, res) => {
     hash = await bcrypt.hash(String(req.body.newPassword), 12);
     pwv += 1;
   }
+  const smsOptIn = (req.body.smsOptIn !== undefined ? req.body.smsOptIn === true : u.sms_opt_in) && !!phone;
   const user = await db.one(
-    `UPDATE users SET name=$2, phone=$3, zelle_handle=$4, password_hash=$5, pwv=$6, email=$7 WHERE id=$1 RETURNING *`,
-    [u.id, name, phone, zelle, hash, pwv, newEmail]);
+    `UPDATE users SET name=$2, phone=$3, zelle_handle=$4, password_hash=$5, pwv=$6, email=$7, sms_opt_in=$8 WHERE id=$1 RETURNING *`,
+    [u.id, name, phone, zelle, hash, pwv, newEmail, smsOptIn]);
   // A password change signs out other devices; hand this one a fresh token.
   res.json({ user: publicUser(user), ...(pwv !== u.pwv ? { token: signToken(user) } : {}) });
 });
@@ -556,38 +574,77 @@ app.post('/api/purchases', requireAuth, async (req, res) => {
   }
   const stripe = academyStripe(a);
   if (!stripe && PROD) fail(503, `${a.name} hasn't set up online card payments yet — please pay the academy directly`);
+  const renew = req.body.renew === true;
+  if (renew) {
+    if (!renewAvailable(a)) fail(400, `${a.name} hasn't turned on monthly renewal yet`);
+    // California's automatic-renewal law: the student must actively agree.
+    if (req.body.agreeRenew !== true) fail(400, 'Tick the box to agree to the monthly charge');
+    if (await activeRenewal(req.aid, req.user.id)) {
+      fail(409, 'You already have a monthly plan. Turn it off under Account first to switch packs.');
+    }
+  }
+  const surcharge = surchargeOf(a, pack.price_cents);
 
   const purchase = await db.one(
-    `INSERT INTO purchases (academy_id, student_id, pack_id, pack_name, for_month, duration_minutes, lesson_count, amount_cents, method)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'stripe') RETURNING *`,
-    [req.aid, req.user.id, pack.id, pack.name, forMonth, pack.duration_minutes, pack.lesson_count, pack.price_cents]);
+    `INSERT INTO purchases (academy_id, student_id, pack_id, pack_name, for_month, duration_minutes, lesson_count, amount_cents, surcharge_cents, method)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'stripe') RETURNING *`,
+    [req.aid, req.user.id, pack.id, pack.name, forMonth, pack.duration_minutes, pack.lesson_count, pack.price_cents, surcharge]);
 
   if (!stripe) {
     // Local development only: no Stripe key, so "pay" instantly to exercise the flow.
     await db.query(`UPDATE purchases SET note = 'dev mode: no Stripe key' WHERE id = $1`, [purchase.id]);
     await fulfillPurchase(a, purchase.id);
-    return res.json({ paid: true });
+    if (renew) await startRenewal(a, purchase.id, null);
+    return res.json({ paid: true, renewing: renew });
   }
 
   const back = `${originOf(req)}/a/${a.slug}/app`;
+  const lineItem = (cents, name, description) => ({
+    quantity: 1, price_data: { currency: 'usd', unit_amount: cents, product_data: { name, description } },
+  });
+  const pct = (db.settingsOf(a).card_surcharge_bps / 100).toFixed(2).replace(/\.?0+$/, '');
+  const prior = renew ? await db.one(
+    `SELECT stripe_customer_id FROM renewals WHERE academy_id = $1 AND student_id = $2 AND stripe_customer_id IS NOT NULL
+      ORDER BY id DESC LIMIT 1`, [req.aid, req.user.id]) : null;
   const session = await stripe.checkout.sessions.create({
     mode: 'payment',
-    customer_email: req.user.email,
-    line_items: [{
-      quantity: 1,
-      price_data: {
-        currency: 'usd',
-        unit_amount: pack.price_cents,
-        product_data: { name: `${a.name}: ${pack.name}`, description: `Group lessons for ${forMonth}` },
-      },
-    }],
-    metadata: { purchase_id: String(purchase.id), academy_id: String(a.id), student_id: String(req.user.id) },
+    ...(prior ? { customer: prior.stripe_customer_id } : { customer_email: req.user.email }),
+    line_items: [
+      lineItem(pack.price_cents, `${a.name}: ${pack.name}`, `Group lessons for ${monthName(forMonth)}`),
+      ...(surcharge ? [lineItem(surcharge, 'Card processing fee', `${pct}% added to card payments`)] : []),
+    ],
+    metadata: { purchase_id: String(purchase.id), academy_id: String(a.id), student_id: String(req.user.id), renew: renew ? '1' : '' },
+    // Monthly renewal: keep the card on file so next month's charge can run.
+    ...(renew ? {
+      ...(prior ? {} : { customer_creation: 'always' }),
+      payment_intent_data: { setup_future_usage: 'off_session' },
+      custom_text: { submit: { message: renewTerms(a, pack.price_cents + surcharge, addMonths(forMonth, 1)) } },
+    } : {}),
     success_url: `${back}?checkout=success&session_id={CHECKOUT_SESSION_ID}#buy`,
     cancel_url: `${back}?checkout=cancelled#buy`,
   });
   await db.query('UPDATE purchases SET stripe_session_id = $2 WHERE id = $1', [purchase.id, session.id]);
   res.json({ url: session.url });
 });
+
+const dollars = (cents) => `$${(cents / 100).toFixed(2)}`;
+const monthName = (ym) => new Date(`${ym}-15T12:00:00Z`).toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+// The automatic-renewal terms, shown before paying and in the confirmation email.
+const renewTerms = (a, cents, firstMonth) =>
+  `You agree that ${a.name} will charge your card ${dollars(cents)} on the 1st of every month, starting ${monthName(firstMonth)}, `
+  + `for that month's lessons, until you turn it off. Turn it off any time in the app under Account → My monthly plan; `
+  + `lessons you've already paid for stay yours.`;
+
+// Midnight on the 1st of month `ym` in time zone `tz`, as a Date.
+function monthStartIn(ym, tz) {
+  const [y, m] = ym.split('-').map(Number);
+  const guess = Date.UTC(y, m - 1, 1);
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
+    timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+  }).formatToParts(new Date(guess)).map((x) => [x.type, x.value]));
+  const shownAs = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute);
+  return new Date(guess - (shownAs - guess));
+}
 
 // Called when Stripe redirects back, so credits appear even if the webhook is
 // slow or not configured. Safe to repeat — fulfillment is idempotent.
@@ -599,19 +656,191 @@ app.post('/api/purchases/confirm', requireAuth, async (req, res) => {
     'SELECT * FROM purchases WHERE stripe_session_id = $1 AND student_id = $2 AND academy_id = $3',
     [sessionId, req.user.id, req.aid]);
   if (!p) fail(404, 'Purchase not found');
-  if (p.status === 'paid') return res.json({ paid: true });
+  if (p.status === 'paid' && await db.one('SELECT 1 FROM renewals WHERE first_purchase_id = $1', [p.id])) {
+    return res.json({ paid: true, renewing: true });
+  }
   const s = await stripe.checkout.sessions.retrieve(sessionId);
   if (s.payment_status === 'paid') {
     await fulfillPurchase(req.academy, p.id, s.id);
-    return res.json({ paid: true });
+    const renewing = !!(s.metadata && s.metadata.renew === '1');
+    if (renewing) await startRenewal(req.academy, p.id, s);
+    return res.json({ paid: true, renewing });
   }
   res.json({ paid: false });
+});
+
+// ── Monthly auto-renewal ─────────────────────────────────────
+// After the first month is paid, a Stripe subscription in the academy's own
+// account charges the same pack on the 1st of each following month. It is
+// created with a free "trial" up to that 1st, so nothing extra is charged now.
+
+const RENEWAL_SELECT = `
+  SELECT r.id, r.student_id AS "studentId", u.name AS "studentName", u.email AS "studentEmail",
+         r.pack_name AS "packName", r.duration_minutes AS "durationMinutes", r.lesson_count AS "lessonCount",
+         r.amount_cents AS "amountCents", r.surcharge_cents AS "surchargeCents", r.status,
+         r.cancel_at_period_end AS "turnedOff", r.first_renewal_month AS "firstRenewalMonth",
+         r.last_renewed_month AS "lastRenewedMonth", r.payment_failed_at AS "paymentFailedAt",
+         r.created_at AS "createdAt", r.updated_at AS "updatedAt"
+    FROM renewals r JOIN users u ON u.id = r.student_id`;
+
+const activeRenewal = (aid, studentId) => db.one(
+  `SELECT * FROM renewals WHERE academy_id = $1 AND student_id = $2
+      AND status IN ('creating','active','past_due') AND NOT cancel_at_period_end`, [aid, studentId]);
+
+// The month the next automatic charge pays for.
+const nextRenewalMonth = (r) => (r.lastRenewedMonth ? addMonths(r.lastRenewedMonth, 1) : r.firstRenewalMonth);
+
+async function renewalEmail(academy, renewalId, kind) {
+  const r = await db.one(`${RENEWAL_SELECT} WHERE r.id = $1`, [renewalId]);
+  if (!r || !r.studentEmail) return;
+  const s = db.settingsOf(academy);
+  const total = r.amountCents + r.surchargeCents;
+  const next = nextRenewalMonth(r);
+  const lines = kind === 'started' ? [
+    `Hi ${r.studentName},`, '',
+    `Your monthly plan with ${academy.name} is on: ${r.packName}, ${dollars(total)} a month.`,
+    renewTerms(academy, total, next), '',
+    `To turn it off: log in, tap Account, then "Turn off monthly renewal" under My monthly plan.`,
+  ] : [
+    `Hi ${r.studentName},`, '',
+    `Monthly renewal of ${r.packName} with ${academy.name} is now off. You won't be charged again.`,
+    `Lessons you've already paid for stay in your account until they expire.`,
+  ];
+  lines.push('', `Questions? Contact ${academy.name}${s.contact_phone ? ` at ${s.contact_phone}` : ''}.`);
+  await email.sendEmail({
+    to: r.studentEmail, replyTo: s.contact_email || undefined,
+    subject: kind === 'started' ? `Your monthly lesson plan with ${academy.name}` : `Monthly renewal turned off — ${academy.name}`,
+    text: lines.join('\n'),
+    html: lines.map((l) => (l ? `<p>${escapeHtml(l)}</p>` : '')).join(''),
+  }).catch((err) => console.error('Renewal email failed:', err));
+}
+
+// Idempotent: the webhook and the return-from-Checkout call may both arrive;
+// whoever inserts the row first creates the Stripe subscription.
+async function startRenewal(academy, purchaseId, session) {
+  const p = await db.one(`SELECT * FROM purchases WHERE id = $1 AND academy_id = $2 AND status = 'paid'`, [purchaseId, academy.id]);
+  if (!p) return null;
+  const first = addMonths(p.for_month, 1);
+  const r = await db.one(
+    `INSERT INTO renewals (academy_id, student_id, pack_id, pack_name, duration_minutes, lesson_count, amount_cents,
+                           surcharge_cents, first_purchase_id, first_renewal_month)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (first_purchase_id) DO NOTHING RETURNING *`,
+    [academy.id, p.student_id, p.pack_id, p.pack_name, p.duration_minutes, p.lesson_count, p.amount_cents,
+     p.surcharge_cents, p.id, first]);
+  if (!r) return null;
+  await db.query('UPDATE purchases SET renewal_id = $2 WHERE id = $1', [p.id, r.id]);
+  const stripe = academyStripe(academy);
+  if (!stripe) {
+    // Local development: no Stripe; POST /api/dev/run-renewals plays the 1st of the month.
+    await db.query(`UPDATE renewals SET status = 'active' WHERE id = $1`, [r.id]);
+  } else {
+    try {
+      const pi = await stripe.paymentIntents.retrieve(session.payment_intent);
+      const customer = session.customer || pi.customer;
+      const product = await stripe.products.create({ name: `${academy.name}: ${p.pack_name} (monthly)` });
+      const sub = await stripe.subscriptions.create({
+        customer,
+        default_payment_method: pi.payment_method,
+        items: [{ price_data: { currency: 'usd', product: product.id, unit_amount: p.amount_cents + p.surcharge_cents, recurring: { interval: 'month' } } }],
+        // A few minutes past midnight so the charge clearly belongs to the new month.
+        trial_end: Math.floor(monthStartIn(first, academy.timezone).getTime() / 1000) + 300,
+        proration_behavior: 'none',
+        description: `${p.pack_name}, renewed monthly`,
+        metadata: { renewal_id: String(r.id), academy_id: String(academy.id), student_id: String(p.student_id) },
+      });
+      await db.query(
+        `UPDATE renewals SET status = 'active', stripe_customer_id = $2, stripe_subscription_id = $3, updated_at = now() WHERE id = $1`,
+        [r.id, customer, sub.id]);
+    } catch (err) {
+      console.error(`Renewal setup failed for purchase ${p.id}:`, err.message);
+      await db.query(`UPDATE renewals SET status = 'failed', updated_at = now() WHERE id = $1`, [r.id]);
+      return null;
+    }
+  }
+  renewalEmail(academy, r.id, 'started');
+  return r;
+}
+
+// One month's automatic charge went through: record it and add the credits.
+// Keyed by the invoice id, so a repeated webhook adds nothing.
+async function renewMonth(academy, r, month, invoiceId) {
+  const p = await db.one(
+    `INSERT INTO purchases (academy_id, student_id, pack_id, pack_name, for_month, duration_minutes, lesson_count,
+                            amount_cents, surcharge_cents, method, renewal_id, stripe_invoice_id, note)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'stripe',$10,$11,'Monthly renewal')
+     ON CONFLICT (stripe_invoice_id) DO NOTHING RETURNING id`,
+    [academy.id, r.student_id, r.pack_id, r.pack_name, month, r.duration_minutes, r.lesson_count,
+     r.amount_cents, r.surcharge_cents, r.id, invoiceId]);
+  if (!p) return false;
+  await fulfillPurchase(academy, p.id);
+  await db.query(
+    `UPDATE renewals SET last_renewed_month = GREATEST(COALESCE(last_renewed_month, ''), $2), status = 'active',
+            payment_failed_at = NULL, updated_at = now() WHERE id = $1`, [r.id, month]);
+  return true;
+}
+
+const idOf = (x) => (x && typeof x === 'object' ? x.id : x) || null;
+// Newer Stripe API versions moved the subscription id under invoice.parent.
+const invoiceSubscription = (inv) => idOf(inv.subscription)
+  || idOf(inv.parent && inv.parent.subscription_details && inv.parent.subscription_details.subscription);
+
+async function renewalWebhook(academy, event) {
+  const o = event.data.object;
+  const subId = event.type.startsWith('invoice.') ? invoiceSubscription(o) : o.id;
+  if (!subId) return;
+  const r = await db.one('SELECT * FROM renewals WHERE academy_id = $1 AND stripe_subscription_id = $2', [academy.id, subId]);
+  if (!r) return;
+  if (event.type === 'invoice.paid') {
+    if (!o.amount_paid) return; // the $0 invoice when the plan starts
+    const line = o.lines && o.lines.data && o.lines.data[0];
+    const start = (line && line.period && line.period.start) || o.period_end;
+    await renewMonth(academy, r, monthOf(academy.timezone, new Date((start + 3600) * 1000)), o.id);
+  } else if (event.type === 'invoice.payment_failed') {
+    await db.query(`UPDATE renewals SET status = 'past_due', payment_failed_at = now(), updated_at = now() WHERE id = $1`, [r.id]);
+  } else {
+    const status = { trialing: 'active', active: 'active', past_due: 'past_due', unpaid: 'past_due' }[o.status] || 'canceled';
+    await db.query(
+      `UPDATE renewals SET status = $2, cancel_at_period_end = $3, updated_at = now() WHERE id = $1`,
+      [r.id, event.type === 'customer.subscription.deleted' ? 'canceled' : status, !!(o.cancel_at_period_end || o.cancel_at)]);
+  }
+}
+
+// Turn a plan's renewal off (stops future charges) or back on.
+async function setRenewal(academy, r, on, byUserId) {
+  if (!['active', 'past_due'].includes(r.status)) fail(400, 'This plan has ended. Buy a pack with "Renew every month" to start a new one.');
+  if (on === !r.cancel_at_period_end) return;
+  if (on && await activeRenewal(academy.id, r.student_id)) fail(409, 'There is already a monthly plan running.');
+  if (r.stripe_subscription_id) {
+    const stripe = academyStripe(academy);
+    if (!stripe) fail(400, 'Card payments are disconnected, so this plan cannot be changed here — change it in Stripe');
+    await stripe.subscriptions.update(r.stripe_subscription_id, { cancel_at_period_end: !on });
+  }
+  await db.query(
+    `UPDATE renewals SET cancel_at_period_end = $2, turned_off_by = $3, updated_at = now() WHERE id = $1`,
+    [r.id, !on, on ? null : byUserId]);
+  if (!on) renewalEmail(academy, r.id, 'stopped');
+}
+
+app.get('/api/my/renewals', requireAuth, async (req, res) => {
+  const rows = await db.many(
+    `${RENEWAL_SELECT} WHERE r.academy_id = $1 AND r.student_id = $2 AND r.status <> 'failed' ORDER BY r.id DESC LIMIT 10`,
+    [req.aid, req.user.id]);
+  res.json(rows.map((r) => ({ ...r, nextMonth: nextRenewalMonth(r) })));
+});
+
+app.put('/api/my/renewals/:id', requireAuth, async (req, res) => {
+  const r = await db.one('SELECT * FROM renewals WHERE id = $1 AND academy_id = $2 AND student_id = $3',
+    [int(req.params.id, 'Plan'), req.aid, req.user.id]);
+  if (!r) fail(404, 'Plan not found');
+  await setRenewal(req.academy, r, req.body.on === true, req.user.id);
+  res.json({ ok: true });
 });
 
 function purchaseList(aid, where, params) {
   return db.many(
     `SELECT p.id, p.pack_name AS "packName", p.for_month AS "forMonth", p.duration_minutes AS "durationMinutes",
-            p.lesson_count AS "lessonCount", p.amount_cents AS "amountCents", p.method, p.status, p.note,
+            p.lesson_count AS "lessonCount", p.amount_cents AS "amountCents", p.surcharge_cents AS "surchargeCents",
+            p.renewal_id AS "renewalId", p.method, p.status, p.note,
             p.created_at AS "createdAt", p.paid_at AS "paidAt", u.name AS "studentName", p.student_id AS "studentId"
        FROM purchases p JOIN users u ON u.id = p.student_id
       WHERE p.academy_id = $1 AND ${where} AND p.status <> 'cancelled'
@@ -729,9 +958,25 @@ function creditLine(academy, credit, lessonMonth) {
   const d = new Date(`${until}T12:00:00Z`).toLocaleDateString('en-US', { month: 'long', day: 'numeric', timeZone: 'UTC' });
   return `Your lesson credit is back in your account and can be used through ${d}.`;
 }
-function notifyCancelled(academy, items, reason) {
+// Also texts students who opted in; returns the set of student ids texted.
+async function notifyCancelled(academy, items, reason) {
   const fmt = new Intl.DateTimeFormat('en-US', { timeZone: academy.timezone, weekday: 'long', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  const short = new Intl.DateTimeFormat('en-US', { timeZone: academy.timezone, weekday: 'short', month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' });
   const s = db.settingsOf(academy);
+  const texted = new Set();
+  // Outside production, texts are printed to the console so this can be tried.
+  if (s.sms_enabled && (sms.isConfigured() || !PROD)) {
+    const ids = [...new Set(items.map((it) => it.studentId))];
+    const rows = ids.length ? await db.many(
+      'SELECT id FROM users WHERE academy_id = $1 AND id = ANY($2::int[]) AND sms_opt_in AND phone IS NOT NULL', [academy.id, ids]) : [];
+    for (const r of rows) texted.add(r.id);
+  }
+  for (const it of items) {
+    if (!texted.has(it.studentId)) continue;
+    const body = `${academy.name}: your ${it.what} ${short.format(new Date(it.startsAt))} is cancelled${reason ? ` (${reason})` : ''}.`
+      + `${it.smsExtra ? ` ${it.smsExtra}` : ''} Reply STOP to opt out.`;
+    sms.sendSms({ to: it.phone, body }).catch((err) => console.error('Cancel text failed:', err));
+  }
   for (const it of items) {
     if (!it.email) continue;
     const when = fmt.format(new Date(it.startsAt));
@@ -748,10 +993,13 @@ function notifyCancelled(academy, items, reason) {
       html: lines.map((l) => (l ? `<p>${escapeHtml(l)}</p>` : '')).join(''),
     }).catch((err) => console.error('Cancel email failed:', err));
   }
+  return texted;
 }
-const contactsOf = (items) => {
+const contactsOf = (items, texted = new Set()) => {
   const seen = new Map();
-  for (const it of items) if (!seen.has(it.studentId)) seen.set(it.studentId, { name: it.name, phone: it.phone, email: it.email });
+  for (const it of items) {
+    if (!seen.has(it.studentId)) seen.set(it.studentId, { name: it.name, phone: it.phone, email: it.email, texted: texted.has(it.studentId) });
+  }
   return [...seen.values()];
 };
 
@@ -768,6 +1016,7 @@ async function cancelSessionTx(t, academy, sessionId, { by, reason, credit }) {
   return rows.map((b) => ({
     studentId: b.student_id, name: b.name, phone: b.phone, email: b.email, startsAt: b.starts_at,
     what: 'group lesson', where: `${b.loc}, ${b.court}`, extra: creditLine(academy, credit, b.lesson_month),
+    smsExtra: credit === 'none' ? '' : 'Your lesson credit is back in your account.',
   }));
 }
 
@@ -810,6 +1059,7 @@ const PRIVATE_SELECT = `
          p.price_cents AS "priceCents", p.academy_fee_cents AS "academyFeeCents",
          p.student_paid AS "studentPaid", p.fee_paid AS "feePaid", p.notes,
          p.pro_id AS "proId", pu.name AS "proName", pu.zelle_handle AS "proZelle",
+         (pu.court_budget_hours IS NOT NULL) AS "onBudget",
          p.student_id AS "studentId", su.name AS "studentName", su.phone AS "studentPhone", su.email AS "studentEmail",
          p.court_id AS "courtId", c.name AS "courtName", l.name AS "locationName"
     FROM private_lessons p
@@ -818,7 +1068,7 @@ const PRIVATE_SELECT = `
     JOIN courts c ON c.id = p.court_id
     JOIN locations l ON l.id = c.location_id`;
 
-const studentView = ({ academyFeeCents, feePaid, studentEmail, studentPhone, ...r }) => r;
+const studentView = ({ academyFeeCents, feePaid, studentEmail, studentPhone, onBudget, ...r }) => r;
 
 app.get('/api/private/open', requireAuth, async (req, res) => {
   const rows = await db.many(
@@ -862,9 +1112,9 @@ app.post('/api/private/:id/cancel', requireAuth, async (req, res) => {
       const reason = str(req.body.reason, 'Reason', { optional: true, max: 200 });
       const items = [{ studentId: st.id, name: st.name, phone: st.phone, email: st.email, startsAt: p.starts_at,
         what: db.settingsOf(req.academy).private_label.toLowerCase(), where: `${st.loc}, ${st.court}`,
-        extra: 'Please contact your pro to reschedule.' }];
-      if (req.body.notify !== false) notifyCancelled(req.academy, items, reason);
-      return res.json({ ok: true, contacts: contactsOf(items) });
+        extra: 'Please contact your pro to reschedule.', smsExtra: 'Please contact your pro to reschedule.' }];
+      const texted = req.body.notify !== false ? await notifyCancelled(req.academy, items, reason) : undefined;
+      return res.json({ ok: true, contacts: contactsOf(items, texted) });
     }
   } else {
     if (!staffOwner && new Date(p.starts_at) <= new Date()) fail(400, 'This lesson has already started');
@@ -1039,8 +1289,8 @@ app.post('/api/staff/sessions/:id/cancel', requireAuth, requireStaff, async (req
     for (const id of targets) all.push(...await cancelSessionTx(t, req.academy, id, { by: req.user.id, reason, credit }));
     return { n: targets.length, items: all };
   });
-  if (req.body.notify !== false) notifyCancelled(req.academy, items, reason);
-  res.json({ cancelled: n, contacts: contactsOf(items), emailed: req.body.notify !== false && email.isConfigured() });
+  const texted = req.body.notify !== false ? await notifyCancelled(req.academy, items, reason) : undefined;
+  res.json({ cancelled: n, contacts: contactsOf(items, texted), emailed: req.body.notify !== false && email.isConfigured() });
 });
 
 // Owner only: cancel everything on one day (weather), optionally at one location.
@@ -1077,13 +1327,13 @@ app.post('/api/admin/cancel-day', requireAuth, requireAdmin, async (req, res) =>
       await t.query(`UPDATE private_lessons SET status = 'cancelled' WHERE id = $1`, [p.id]);
       if (p.student_id) {
         all.push({ studentId: p.student_id, name: p.name, phone: p.phone, email: p.email, startsAt: p.starts_at,
-          what: label, where: `${p.loc}, ${p.court}`, extra: 'Please contact your pro to reschedule.' });
+          what: label, where: `${p.loc}, ${p.court}`, extra: 'Please contact your pro to reschedule.', smsExtra: 'Please contact your pro to reschedule.' });
       }
     }
     return all;
   });
-  if (req.body.notify !== false) notifyCancelled(req.academy, items, reason);
-  res.json({ ...summary, contacts: contactsOf(items), emailed: req.body.notify !== false && email.isConfigured() });
+  const texted = req.body.notify !== false ? await notifyCancelled(req.academy, items, reason) : undefined;
+  res.json({ ...summary, contacts: contactsOf(items, texted), emailed: req.body.notify !== false && email.isConfigured() });
 });
 
 app.post('/api/staff/sessions/:id/attendance', requireAuth, requireStaff, async (req, res) => {
@@ -1213,7 +1463,14 @@ app.post('/api/staff/private', requireAuth, requireStaff, async (req, res) => {
     }
     return starts.length;
   });
-  res.json({ created: n });
+  // Over budget is allowed — management decides — but say so straight away.
+  const month = monthOf(req.tz, new Date(startsAt));
+  const budget = await courtBudget(req.academy, pro, month);
+  res.json({
+    created: n,
+    ...(budget && budget.overBy ? { budgetWarning: `${pro.name} now has ${budget.scheduledHours} court hours scheduled in ${monthName(month)}, `
+      + `${budget.overBy} over the ${budget.hours}-hour budget. Ask management for more hours under My hours.` } : {}),
+  });
 });
 
 app.get('/api/staff/private', requireAuth, requireStaff, async (req, res) => {
@@ -1283,6 +1540,134 @@ async function proMonth(aid, tz, proId, month) {
   return { sessions, groupHours: doneMin / 60, upcomingHours: upcomingMin / 60, private: priv };
 }
 
+// ── Pro court-hour budgets ──
+// Management sets how many court-rental hours a pro gets each month; the pro
+// owes the court fee on those hours whether used or not. Going over is
+// allowed (management decides) but flagged; pros ask for more via a request.
+
+function hoursOf(v, name = 'Hours') {
+  const n = Number(v);
+  if (v === '' || v === null || v === undefined || !Number.isFinite(n) || n < 0 || n > 744) fail(400, `${name} is invalid`);
+  return Math.round(n * 100) / 100;
+}
+const hasBudget = (pro, month) => pro.court_budget_hours != null && (!pro.court_budget_since || month >= pro.court_budget_since);
+
+async function courtBudget(academy, pro, month) {
+  if (!hasBudget(pro, month)) return null;
+  const row = await db.one('SELECT * FROM pro_court_months WHERE pro_id = $1 AND month = $2', [pro.id, month]);
+  const hours = Number(row && row.hours != null ? row.hours : pro.court_budget_hours);
+  const rate = row && row.fee_cents_per_hour != null ? row.fee_cents_per_hour : db.settingsOf(academy).private_court_fee_cents_per_hour;
+  const used = await db.one(
+    `SELECT COALESCE(sum(duration_minutes), 0)::int AS mins FROM private_lessons
+      WHERE academy_id = $1 AND pro_id = $2 AND status <> 'cancelled'
+        AND to_char(starts_at AT TIME ZONE $4, 'YYYY-MM') = $3`, [academy.id, pro.id, month, academy.timezone]);
+  const requests = await db.many(
+    `SELECT id, hours::float AS hours, reason, status, created_at AS "createdAt", decided_at AS "decidedAt"
+       FROM court_hour_requests WHERE pro_id = $1 AND month = $2 ORDER BY id DESC`, [pro.id, month]);
+  const scheduledHours = used.mins / 60;
+  return {
+    month, hours, defaultHours: Number(pro.court_budget_hours), changed: !!(row && row.hours != null),
+    scheduledHours, overBy: Math.max(0, Math.round((scheduledHours - hours) * 100) / 100),
+    feeCentsPerHour: rate, feeCents: Math.round(hours * rate), feePaidAt: row ? row.fee_paid_at : null, requests,
+  };
+}
+
+// Court fees budgeted pros still owe for months that have ended.
+async function budgetFeesOwed(academy) {
+  const last = addMonths(monthOf(academy.timezone), -1);
+  const pros = await db.many(
+    `SELECT * FROM users WHERE academy_id = $1 AND court_budget_hours IS NOT NULL AND active`, [academy.id]);
+  let total = 0;
+  for (const p of pros) {
+    for (let m = p.court_budget_since || last; m <= last; m = addMonths(m, 1)) {
+      const b = await courtBudget(academy, p, m);
+      if (b && !b.feePaidAt) total += b.feeCents;
+    }
+  }
+  return total;
+}
+
+// Per-lesson court fees don't apply to a budgeted pro's months.
+const PER_LESSON_FEE = (alias, tzParam) => `NOT EXISTS (SELECT 1 FROM users bu WHERE bu.id = ${alias}.pro_id
+  AND bu.court_budget_hours IS NOT NULL AND to_char(${alias}.starts_at AT TIME ZONE ${tzParam}, 'YYYY-MM') >= COALESCE(bu.court_budget_since, ''))`;
+
+async function upsertCourtMonth(aid, proId, month, sets, by) {
+  // sets: { hours?, fee_cents_per_hour?, fee_paid_at? } — only listed columns change.
+  const cols = Object.keys(sets);
+  await db.query(
+    `INSERT INTO pro_court_months (academy_id, pro_id, month, ${cols.join(', ')}, updated_by)
+     VALUES ($1, $2, $3, ${cols.map((_, i) => `$${i + 5}`).join(', ')}, $4)
+     ON CONFLICT (pro_id, month) DO UPDATE SET ${cols.map((c) => `${c} = EXCLUDED.${c}`).join(', ')},
+       updated_by = EXCLUDED.updated_by, updated_at = now()`,
+    [aid, proId, month, by, ...cols.map((c) => sets[c])]);
+}
+
+async function academyPro(req, id) {
+  const pro = await db.one(`SELECT * FROM users WHERE id = $1 AND academy_id = $2 AND role IN ('pro','admin')`, [int(id, 'Pro'), req.aid]);
+  if (!pro) fail(404, 'Pro not found');
+  return pro;
+}
+
+// Management changes one month's hours (blank = back to the usual amount).
+app.put('/api/admin/court-budget', requireAuth, requireAdmin, async (req, res) => {
+  const pro = await academyPro(req, req.body.proId);
+  const month = req.body.month;
+  if (!isMonth(month)) fail(400, 'Month is invalid');
+  if (!hasBudget(pro, month)) fail(400, `${pro.name} isn't on a monthly court-hour budget for that month. Set one under Setup → Edit.`);
+  const hours = req.body.hours === '' || req.body.hours === null ? null : hoursOf(req.body.hours);
+  await upsertCourtMonth(req.aid, pro.id, month, { hours }, req.user.id);
+  res.json({ budget: await courtBudget(req.academy, pro, month) });
+});
+
+app.post('/api/admin/court-budget/fee', requireAuth, requireAdmin, async (req, res) => {
+  const pro = await academyPro(req, req.body.proId);
+  const month = req.body.month;
+  if (!isMonth(month)) fail(400, 'Month is invalid');
+  const b = await courtBudget(req.academy, pro, month);
+  if (!b) fail(400, 'No court-hour budget that month');
+  // Freeze the hours and rate the fee was paid on.
+  await upsertCourtMonth(req.aid, pro.id, month, req.body.paid === false
+    ? { fee_paid_at: null }
+    : { hours: b.hours, fee_cents_per_hour: b.feeCentsPerHour, fee_paid_at: new Date().toISOString() }, req.user.id);
+  res.json({ ok: true });
+});
+
+// A pro asks management for more court hours.
+app.post('/api/staff/court-requests', requireAuth, requireStaff, async (req, res) => {
+  const month = req.body.month;
+  if (!isMonth(month) || month < monthOf(req.tz)) fail(400, 'Pick this month or a later one');
+  if (!hasBudget(req.user, month)) fail(400, 'You are not on a monthly court-hour budget — ask the owner');
+  const hours = hoursOf(req.body.hours, 'Extra hours');
+  if (hours <= 0) fail(400, 'Ask for at least a half hour');
+  const reason = str(req.body.reason, 'Reason', { optional: true, max: 300 });
+  await db.query(`INSERT INTO court_hour_requests (academy_id, pro_id, month, hours, reason) VALUES ($1,$2,$3,$4,$5)`,
+    [req.aid, req.user.id, month, hours, reason]);
+  const owners = await db.many(`SELECT email FROM users WHERE academy_id = $1 AND role = 'admin' AND active`, [req.aid]);
+  const text = `${req.user.name} is asking for ${hours} more court hour${hours === 1 ? '' : 's'} in ${monthName(month)}`
+    + `${reason ? `: "${reason}"` : '.'}\n\nApprove or decline it in the app under Payroll.`;
+  for (const o of owners) {
+    email.sendEmail({ to: o.email, subject: `Court hours request from ${req.user.name}`, text, html: `<p>${escapeHtml(text).replace(/\n/g, '<br>')}</p>` })
+      .catch((err) => console.error('Request email failed:', err));
+  }
+  res.json({ ok: true });
+});
+
+app.post('/api/admin/court-requests/:id', requireAuth, requireAdmin, async (req, res) => {
+  const r = await db.one(`SELECT * FROM court_hour_requests WHERE id = $1 AND academy_id = $2 AND status = 'pending'`,
+    [int(req.params.id, 'Request'), req.aid]);
+  if (!r) fail(404, 'Request not found or already answered');
+  const approve = req.body.approve === true;
+  if (approve) {
+    const pro = await db.one('SELECT * FROM users WHERE id = $1', [r.pro_id]);
+    const b = await courtBudget(req.academy, pro, r.month);
+    if (!b) fail(400, `${pro.name} is no longer on a court-hour budget`);
+    await upsertCourtMonth(req.aid, pro.id, r.month, { hours: b.hours + Number(r.hours) }, req.user.id);
+  }
+  await db.query(`UPDATE court_hour_requests SET status = $2, decided_by = $3, decided_at = now() WHERE id = $1`,
+    [r.id, approve ? 'approved' : 'declined', req.user.id]);
+  res.json({ ok: true });
+});
+
 app.get('/api/staff/hours', requireAuth, requireStaff, async (req, res) => {
   const month = isMonth(req.query.month) ? req.query.month : monthOf(req.tz);
   const proId = req.user.role === 'admin' && req.query.proId ? int(req.query.proId, 'Pro') : req.user.id;
@@ -1295,6 +1680,7 @@ app.get('/api/staff/hours', requireAuth, requireStaff, async (req, res) => {
   res.json({
     month, pro: { id: pro.id, name: pro.name, hourlyRateCents: pro.hourly_rate_cents },
     ...m, groupPayCents: Math.round(m.groupHours * pro.hourly_rate_cents), payrollPaid: paid,
+    courtBudget: await courtBudget(req.academy, pro, month),
   });
 });
 
@@ -1305,10 +1691,16 @@ app.get('/api/admin/payroll', requireAuth, requireAdmin, async (req, res) => {
   const rows = [];
   for (const p of pros) {
     const m = await proMonth(req.aid, req.tz, p.id, month);
-    const idle = !m.sessions.length && !m.private.n;
+    const idle = !m.sessions.length && !m.private.n && !hasBudget(p, month);
     if (idle && (!p.active || p.role === 'admin')) continue;
     const pp = paid.find((x) => x.pro_id === p.id);
+    const budget = await courtBudget(req.academy, p, month);
+    if (budget) {
+      m.private.feeCents = budget.feeCents;
+      m.private.feeOwedCents = budget.feePaidAt ? 0 : budget.feeCents;
+    }
     rows.push({
+      courtBudget: budget,
       proId: p.id, name: p.name, hourlyRateCents: p.hourly_rate_cents,
       groupSessions: m.sessions.filter((s) => s.ended).length,
       emptySessions: m.sessions.filter((s) => s.ended && s.booked === 0).length,
@@ -1319,7 +1711,11 @@ app.get('/api/admin/payroll', requireAuth, requireAdmin, async (req, res) => {
       paid: pp ? { amountCents: pp.amount_cents, paidAt: pp.paid_at } : null,
     });
   }
-  res.json({ month, rows });
+  const requests = await db.many(
+    `SELECT r.id, r.pro_id AS "proId", u.name AS "proName", r.month, r.hours::float AS hours, r.reason, r.created_at AS "createdAt"
+       FROM court_hour_requests r JOIN users u ON u.id = r.pro_id
+      WHERE r.academy_id = $1 AND r.status = 'pending' ORDER BY r.created_at`, [req.aid]);
+  res.json({ month, rows, requests });
 });
 
 app.post('/api/admin/payroll/mark-paid', requireAuth, requireAdmin, async (req, res) => {
@@ -1357,10 +1753,13 @@ app.get('/api/admin/summary', requireAuth, requireAdmin, async (req, res) => {
        (SELECT count(*)::int FROM bookings b JOIN group_sessions g ON g.id = b.session_id
          WHERE b.academy_id = $1 AND b.status = 'booked' AND g.starts_at > now() AND g.starts_at < now() + interval '7 days') AS "bookingsNext7",
        (SELECT COALESCE(sum(academy_fee_cents),0)::int FROM private_lessons
-         WHERE academy_id = $1 AND status = 'booked' AND NOT fee_paid AND starts_at < now()) AS "courtFeesOwedCents",
+         WHERE academy_id = $1 AND status = 'booked' AND NOT fee_paid AND starts_at < now()
+           AND ${PER_LESSON_FEE('private_lessons', '$2')}) AS "courtFeesOwedCents",
+       (SELECT count(*)::int FROM court_hour_requests WHERE academy_id = $1 AND status = 'pending') AS "courtRequests",
        (SELECT count(*)::int FROM locations WHERE academy_id = $1) AS "locations",
        (SELECT count(*)::int FROM users WHERE academy_id = $1 AND role = 'pro') AS "pros"`,
     [req.aid, req.tz, month]);
+  row.courtFeesOwedCents += await budgetFeesOwed(req.academy);
   res.json({ month, ...row, stripeConnected: !!req.academy.stripe_secret_enc });
 });
 
@@ -1389,6 +1788,7 @@ app.post('/api/admin/users', requireAuth, requireAdmin, async (req, res) => {
     [req.aid, name, email, phoneOf(req.body.phone), role, await bcrypt.hash(tempPassword, 12),
      int(req.body.hourlyRateCents ?? 0, 'Hourly rate', { min: 0, max: 100000 }),
      int(req.body.privateRateCents ?? settings.default_private_rate_cents, 'Private rate', { min: 0, max: 100000 })]);
+  if (req.body.courtBudgetHours !== undefined && req.body.courtBudgetHours !== '') await setCourtBudget(req, u, req.body.courtBudgetHours);
   res.json({ user: publicUser(u), tempPassword });
 });
 
@@ -1414,8 +1814,28 @@ app.put('/api/admin/users/:id', requireAuth, requireAdmin, async (req, res) => {
      int(b.privateRateCents ?? u.private_rate_cents, 'Private rate', { min: 0, max: 100000 }),
      b.zelleHandle !== undefined ? str(b.zelleHandle, 'Zelle', { optional: true, max: 200 }) : u.zelle_handle,
      b.active ?? u.active, req.user.id, newEmail]);
-  res.json({ user: publicUser(out) });
+  if (b.courtBudgetHours !== undefined) await setCourtBudget(req, out, b.courtBudgetHours);
+  res.json({ user: publicUser(await db.one('SELECT * FROM users WHERE id = $1', [u.id])) });
 });
+
+// A pro's usual monthly court hours; blank = court fee per lesson instead.
+// Changing it must not rewrite months already over, so those are frozen first.
+async function setCourtBudget(req, pro, value) {
+  const hours = value === '' || value === null ? null : hoursOf(value, 'Monthly court hours');
+  const was = pro.court_budget_hours == null ? null : Number(pro.court_budget_hours);
+  if (hours === was) return;
+  const cur = monthOf(req.tz);
+  if (was !== null && pro.court_budget_since) {
+    for (let m = pro.court_budget_since; m < cur; m = addMonths(m, 1)) {
+      await db.query(
+        `INSERT INTO pro_court_months (academy_id, pro_id, month, hours, updated_by) VALUES ($1,$2,$3,$4,$5)
+         ON CONFLICT (pro_id, month) DO UPDATE SET hours = COALESCE(pro_court_months.hours, EXCLUDED.hours)`,
+        [req.aid, pro.id, m, was, req.user.id]);
+    }
+  }
+  await db.query('UPDATE users SET court_budget_hours = $2, court_budget_since = $3 WHERE id = $1',
+    [pro.id, hours, hours === null ? null : (was === null ? cur : pro.court_budget_since || cur)]);
+}
 
 // No email is configured yet, so the owner hands the person a temporary password.
 app.post('/api/admin/users/:id/reset-password', requireAuth, requireAdmin, async (req, res) => {
@@ -1552,7 +1972,52 @@ app.get('/api/admin/settings', requireAuth, requireAdmin, async (req, res) => {
     stripeConnected: !!req.academy.stripe_secret_enc, stripeKeyHint: req.academy.stripe_key_hint,
     stripeWebhookSet: !!req.academy.stripe_webhook_secret_enc,
     webhookUrl: `${originOf(req)}/api/stripe/webhook/${req.aid}`,
+    renewAvailable: renewAvailable(req.academy), smsConfigured: sms.isConfigured(),
   });
+});
+
+// Everyone on monthly auto-renewal, plus students who paid last month but
+// have nothing for this one (cash/Zelle payers to chase).
+app.get('/api/admin/renewals', requireAuth, requireAdmin, async (req, res) => {
+  const month = isMonth(req.query.month) ? req.query.month : monthOf(req.tz);
+  const plans = await db.many(
+    `${RENEWAL_SELECT} WHERE r.academy_id = $1 AND (r.status IN ('active','past_due','creating')
+        OR r.updated_at > now() - interval '60 days') AND r.status <> 'failed'
+      ORDER BY (r.status = 'canceled'), r.cancel_at_period_end, u.name`, [req.aid]);
+  const notRenewed = await db.many(
+    `SELECT u.id AS "studentId", u.name AS "studentName", u.phone, u.email,
+            string_agg(DISTINCT p.pack_name, ', ') AS "lastPacks"
+       FROM purchases p JOIN users u ON u.id = p.student_id
+      WHERE p.academy_id = $1 AND p.status = 'paid' AND p.for_month = $2 AND u.active
+        AND NOT EXISTS (SELECT 1 FROM purchases q WHERE q.student_id = p.student_id AND q.status = 'paid' AND q.for_month = $3)
+        AND NOT EXISTS (SELECT 1 FROM renewals r WHERE r.student_id = p.student_id
+                          AND r.status IN ('active','past_due','creating') AND NOT r.cancel_at_period_end)
+      GROUP BY u.id ORDER BY u.name`, [req.aid, addMonths(month, -1), month]);
+  res.json({ month, plans: plans.map((r) => ({ ...r, nextMonth: nextRenewalMonth(r) })), notRenewed });
+});
+
+app.put('/api/admin/renewals/:id', requireAuth, requireAdmin, async (req, res) => {
+  const r = await db.one('SELECT * FROM renewals WHERE id = $1 AND academy_id = $2', [int(req.params.id, 'Plan'), req.aid]);
+  if (!r) fail(404, 'Plan not found');
+  await setRenewal(req.academy, r, req.body.on === true, req.user.id);
+  res.json({ ok: true });
+});
+
+// Local development only (no Stripe): play "the 1st of `month`" for this
+// academy's plans — charge the ones still on, end the ones turned off.
+app.post('/api/dev/run-renewals', requireAuth, requireAdmin, async (req, res) => {
+  if (PROD || req.academy.stripe_secret_enc) fail(404, 'Not found');
+  const month = isMonth(req.body.month) ? req.body.month : monthOf(req.tz);
+  const plans = await db.many(
+    `SELECT * FROM renewals WHERE academy_id = $1 AND stripe_subscription_id IS NULL AND status IN ('active','past_due')
+        AND first_renewal_month <= $2`, [req.aid, month]);
+  let renewed = 0, ended = 0;
+  for (const r of plans) {
+    if (r.cancel_at_period_end) {
+      await db.query(`UPDATE renewals SET status = 'canceled', updated_at = now() WHERE id = $1`, [r.id]); ended++;
+    } else if (await renewMonth(req.academy, r, month, `dev_${r.id}_${month}`)) renewed++;
+  }
+  res.json({ month, renewed, ended });
 });
 app.put('/api/admin/settings', requireAuth, requireAdmin, async (req, res) => {
   const patch = {};
@@ -1562,6 +2027,13 @@ app.put('/api/admin/settings', requireAuth, requireAdmin, async (req, res) => {
   if (req.body.contact_email !== undefined) patch.contact_email = str(req.body.contact_email, 'Contact email', { optional: true, max: 200 }) || '';
   if (req.body.contact_phone !== undefined) patch.contact_phone = phoneOf(req.body.contact_phone, 'Contact phone') || '';
   if (req.body.private_label !== undefined) patch.private_label = str(req.body.private_label, 'Name for one-on-one bookings', { max: 40 });
+  if (req.body.card_surcharge_percent !== undefined) {
+    const pct = Number(req.body.card_surcharge_percent || 0);
+    // Visa/Mastercard cap surcharges at 3% (and lower where the academy's actual fee is lower).
+    if (!Number.isFinite(pct) || pct < 0 || pct > 3) fail(400, 'Card processing fee must be between 0% and 3%');
+    patch.card_surcharge_bps = Math.round(pct * 100);
+  }
+  if (req.body.sms_enabled !== undefined) patch.sms_enabled = req.body.sms_enabled === true;
   const name = req.body.name !== undefined ? str(req.body.name, 'Academy name', { max: 100 }) : req.academy.name;
   const tz = req.body.timezone && validTimezone(req.body.timezone) ? req.body.timezone : req.academy.timezone;
   await db.query('UPDATE academies SET name = $2, timezone = $3, settings = settings || $4::jsonb WHERE id = $1',

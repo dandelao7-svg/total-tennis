@@ -217,3 +217,8 @@ code { overflow-wrap: anywhere; word-break: break-word; }
 .home-link { display: flex; align-items: center; flex: 1; min-width: 0; color: inherit; text-decoration: none; border-radius: 8px; }
 .home-link:hover .title { text-decoration: underline; text-underline-offset: 3px; }
 .home-link:focus-visible { outline: 2px solid var(--ball); outline-offset: 2px; }
+
+/* Court-hour budget bar */
+.meter { height: 10px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+.meter > div { height: 100%; background: var(--ok); }
+.meter > div.over { background: var(--warn); }

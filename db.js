@@ -261,6 +261,77 @@ async function initSchema() {
       created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS student_notes_student_idx ON student_notes (academy_id, student_id, created_at DESC);
+
+    -- Pro court-hour budgets. A pro with court_budget_hours set rents that
+    -- many court hours a month and owes the court fee on the budget, used or
+    -- not; NULL = the old way, a court fee per private lesson.
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS court_budget_hours NUMERIC(6,2);
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS court_budget_since TEXT;  -- 'YYYY-MM' the budget started
+    -- Students who agreed to cancellation texts (US texting rules need opt-in).
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS sms_opt_in BOOLEAN NOT NULL DEFAULT FALSE;
+
+    -- One month of a pro's budget, once management changes it or the fee is
+    -- received. Without a row, the month uses users.court_budget_hours.
+    CREATE TABLE IF NOT EXISTS pro_court_months (
+      id                 SERIAL PRIMARY KEY,
+      academy_id         INT NOT NULL REFERENCES academies(id),
+      pro_id             INT NOT NULL REFERENCES users(id),
+      month              TEXT NOT NULL,
+      hours              NUMERIC(6,2),
+      fee_cents_per_hour INT,
+      fee_paid_at        TIMESTAMPTZ,
+      fee_paid_by        INT REFERENCES users(id),
+      updated_by         INT REFERENCES users(id),
+      updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE (pro_id, month)
+    );
+
+    -- A pro asking management for more court hours in a month.
+    CREATE TABLE IF NOT EXISTS court_hour_requests (
+      id          SERIAL PRIMARY KEY,
+      academy_id  INT NOT NULL REFERENCES academies(id),
+      pro_id      INT NOT NULL REFERENCES users(id),
+      month       TEXT NOT NULL,
+      hours       NUMERIC(6,2) NOT NULL CHECK (hours > 0),
+      reason      TEXT,
+      status      TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','declined')),
+      decided_by  INT REFERENCES users(id),
+      decided_at  TIMESTAMPTZ,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    -- Card surcharge added on top of the pack price, and auto-renewal links.
+    ALTER TABLE purchases ADD COLUMN IF NOT EXISTS surcharge_cents INT NOT NULL DEFAULT 0;
+    ALTER TABLE purchases ADD COLUMN IF NOT EXISTS renewal_id INT;
+    ALTER TABLE purchases ADD COLUMN IF NOT EXISTS stripe_invoice_id TEXT UNIQUE;
+
+    -- A student's monthly auto-renewal of a lesson pack: a Stripe subscription
+    -- in the academy's own Stripe account. Each paid invoice adds that month's
+    -- credits. cancel_at_period_end = the student turned it off.
+    CREATE TABLE IF NOT EXISTS renewals (
+      id                     SERIAL PRIMARY KEY,
+      academy_id             INT NOT NULL REFERENCES academies(id),
+      student_id             INT NOT NULL REFERENCES users(id),
+      pack_id                INT REFERENCES lesson_packs(id),
+      pack_name              TEXT NOT NULL,
+      duration_minutes       INT NOT NULL,
+      lesson_count           INT NOT NULL,
+      amount_cents           INT NOT NULL,       -- pack price
+      surcharge_cents        INT NOT NULL DEFAULT 0,
+      first_purchase_id      INT UNIQUE REFERENCES purchases(id),
+      first_renewal_month    TEXT NOT NULL,      -- first month charged automatically
+      stripe_customer_id     TEXT,
+      stripe_subscription_id TEXT UNIQUE,
+      status                 TEXT NOT NULL DEFAULT 'creating'
+                             CHECK (status IN ('creating','active','past_due','canceled','failed')),
+      cancel_at_period_end   BOOLEAN NOT NULL DEFAULT FALSE,
+      turned_off_by          INT REFERENCES users(id),
+      last_renewed_month     TEXT,
+      payment_failed_at      TIMESTAMPTZ,
+      created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at             TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS renewals_student_idx ON renewals (academy_id, student_id);
   `);
 }
 
@@ -276,6 +347,11 @@ const DEFAULT_SETTINGS = {
   contact_phone: '',
   // What the academy calls one-on-one bookings, e.g. "Court rental".
   private_label: 'Private lesson',
+  // Card processing fee added to card payments, in hundredths of a percent
+  // (300 = 3%). Card-network rules cap surcharges at 3%.
+  card_surcharge_bps: 0,
+  // Text students about cancellations (needs the platform's Twilio set up).
+  sms_enabled: true,
 };
 const settingsOf = (academy) => ({ ...DEFAULT_SETTINGS, ...(academy.settings || {}) });
 

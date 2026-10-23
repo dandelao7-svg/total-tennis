@@ -67,7 +67,12 @@ Change requests from Total Tennis Academy's owner (demo, 2026-10-21), with the a
 3. **Notes on students:** "Coaching notes" visible to the student/parents (e.g. tournament feedback) and "Staff only" notes visible only to pros and the owner. Staff-only notes must never reach student screens.
 4. **Weather cancellation:** cancel one lesson (exists), owner-only "cancel all lessons today" (optionally per location), email everyone booked, and a "copy phone numbers" button for group texts.
 
-**Batch 2**
+**Batch 2: BUILT 2026-10-22** (tested locally in test mode). Before using it live:
+- *Auto-renewal and the card fee* need the academy's Stripe secret key **and** webhook (Setup → Card payments lists the 5 events). Do one test-mode purchase with "renew every month" against a Stripe test key first; the Stripe subscription part could only be simulated locally (`/api/dev/run-renewals`).
+- *Card fee:* Setup → Academy settings → "Card processing fee (%)", 0–3. Confirm with Stripe/an accountant first (no surcharging debit cards; state rules).
+- *Texts:* set the `TWILIO_*` variables (see `.env.example`) after Twilio's A2P 10DLC registration is approved. Until then the app falls back to the copy-numbers button. Students opt in at sign-up or under Account.
+- *Court-hour budget:* Setup → Edit a pro → "Monthly court-rental hours". Payroll shows budget vs scheduled, requests to approve, and "Fee in".
+
 5. **Pro monthly court-hour budget:** owner sets each pro's monthly court-rental hours (default each month); only management can change them; a pro needing more requests it from management, who adjusts; the pro owes the court fee on the budgeted hours at month end; the owner sees fees still owed per pro. Replaces per-lesson court-fee tracking for these pros.
 6. **Card surcharge:** customers paying by card pay the card processing fee so the academy nets the full price; disclosed before payment. Must follow card-network rules (cap ~3%, no surcharge on debit cards) and California pricing law; confirm with a lawyer / Stripe before going live.
 7. **Real text messages** for cancellations (the owner wants texts, not just email): a texting service such as Twilio, which needs US business texting registration (A2P 10DLC) first, taking days to weeks.
