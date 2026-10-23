@@ -262,16 +262,79 @@ async function initSchema() {
     );
     CREATE INDEX IF NOT EXISTS student_notes_student_idx ON student_notes (academy_id, student_id, created_at DESC);
 
-    -- Pro court-hour budgets. A pro with court_budget_hours set rents that
-    -- many court hours a month and owes the court fee on the budget, used or
-    -- not; NULL = the old way, a court fee per private lesson.
-    ALTER TABLE users ADD COLUMN IF NOT EXISTS court_budget_hours NUMERIC(6,2);
-    ALTER TABLE users ADD COLUMN IF NOT EXISTS court_budget_since TEXT;  -- 'YYYY-MM' the budget started
     -- Students who agreed to cancellation texts (US texting rules need opt-in).
     ALTER TABLE users ADD COLUMN IF NOT EXISTS sms_opt_in BOOLEAN NOT NULL DEFAULT FALSE;
+    -- An hours-only court budget tried on 2026-10-22 and replaced the same day
+    -- by court agreements (below); it was never used.
+    ALTER TABLE users DROP COLUMN IF EXISTS court_budget_hours;
+    ALTER TABLE users DROP COLUMN IF EXISTS court_budget_since;
+    DROP TABLE IF EXISTS court_hour_requests;
 
-    -- One month of a pro's budget, once management changes it or the fee is
-    -- received. Without a row, the month uses users.court_budget_hours.
+    -- Pro court agreements: the owner rents a court at set times from the park
+    -- and the pro owes the court fee on every agreed block, used or not.
+    -- A block repeats weekly on starts_on's weekday from starts_on until ends_on
+    -- (NULL = until changed); starts_on = ends_on is a one-date block.
+    CREATE TABLE IF NOT EXISTS court_blocks (
+      id            SERIAL PRIMARY KEY,
+      academy_id    INT NOT NULL REFERENCES academies(id),
+      pro_id        INT NOT NULL REFERENCES users(id),
+      court_id      INT NOT NULL REFERENCES courts(id),
+      weekday       INT NOT NULL CHECK (weekday BETWEEN 0 AND 6),    -- 0 = Sunday
+      start_minute  INT NOT NULL CHECK (start_minute BETWEEN 0 AND 1439),
+      minutes       INT NOT NULL CHECK (minutes > 0),
+      starts_on     DATE NOT NULL,
+      ends_on       DATE,
+      created_by    INT REFERENCES users(id),
+      created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+      ended_by      INT REFERENCES users(id),
+      ended_at      TIMESTAMPTZ
+    );
+    CREATE INDEX IF NOT EXISTS court_blocks_court_idx ON court_blocks (court_id, weekday);
+    CREATE INDEX IF NOT EXISTS court_blocks_pro_idx ON court_blocks (pro_id);
+
+    -- One date of a block taken off the bill: 'dropped' (an agreed change) or
+    -- 'waived' (the owner let the pro off, e.g. rain).
+    CREATE TABLE IF NOT EXISTS court_block_skips (
+      id          SERIAL PRIMARY KEY,
+      academy_id  INT NOT NULL REFERENCES academies(id),
+      block_id    INT NOT NULL REFERENCES court_blocks(id),
+      on_date     DATE NOT NULL,
+      kind        TEXT NOT NULL CHECK (kind IN ('dropped','waived')),
+      reason      TEXT,
+      created_by  INT REFERENCES users(id),
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE (block_id, on_date)
+    );
+
+    -- A pro asking the owner to add a block, end one, or drop a date.
+    -- Nothing changes until the owner approves; then the pro is committed.
+    CREATE TABLE IF NOT EXISTS court_requests (
+      id          SERIAL PRIMARY KEY,
+      academy_id  INT NOT NULL REFERENCES academies(id),
+      pro_id      INT NOT NULL REFERENCES users(id),
+      kind        TEXT NOT NULL CHECK (kind IN ('add','end','drop')),
+      data        JSONB NOT NULL,
+      summary     TEXT NOT NULL,
+      reason      TEXT,
+      status      TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','declined','withdrawn')),
+      decided_by  INT REFERENCES users(id),
+      decided_at  TIMESTAMPTZ,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    -- Every change to a pro's court agreement, for settling disputes.
+    CREATE TABLE IF NOT EXISTS court_agreement_log (
+      id          SERIAL PRIMARY KEY,
+      academy_id  INT NOT NULL REFERENCES academies(id),
+      pro_id      INT NOT NULL REFERENCES users(id),
+      by_user     INT REFERENCES users(id),
+      text        TEXT NOT NULL,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS court_agreement_log_pro_idx ON court_agreement_log (pro_id, id);
+
+    -- A month's court-agreement fee once the owner marks it received; the
+    -- billed hours and rate are frozen here so later edits can't change it.
     CREATE TABLE IF NOT EXISTS pro_court_months (
       id                 SERIAL PRIMARY KEY,
       academy_id         INT NOT NULL REFERENCES academies(id),
@@ -284,20 +347,6 @@ async function initSchema() {
       updated_by         INT REFERENCES users(id),
       updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
       UNIQUE (pro_id, month)
-    );
-
-    -- A pro asking management for more court hours in a month.
-    CREATE TABLE IF NOT EXISTS court_hour_requests (
-      id          SERIAL PRIMARY KEY,
-      academy_id  INT NOT NULL REFERENCES academies(id),
-      pro_id      INT NOT NULL REFERENCES users(id),
-      month       TEXT NOT NULL,
-      hours       NUMERIC(6,2) NOT NULL CHECK (hours > 0),
-      reason      TEXT,
-      status      TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','declined')),
-      decided_by  INT REFERENCES users(id),
-      decided_at  TIMESTAMPTZ,
-      created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
     );
 
     -- Card surcharge added on top of the pack price, and auto-renewal links.

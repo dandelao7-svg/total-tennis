@@ -460,10 +460,10 @@ VIEWS.privates = async (params) => {
             ${p.status === 'open' ? html`<span class="badge">Open</span>` : ''}</div>
           <div class="small muted">${p.locationName} · ${p.courtName}${isAdmin() ? ` · ${p.proName}` : ''}</div>
           <div class="small">${p.studentName ? html`<strong>${p.studentName}</strong> ${p.studentPhone || ''}` : 'No student yet'}
-            · ${money(p.priceCents)} ${p.onBudget ? "(court-hour budget)" : `(academy fee ${money(p.academyFeeCents)})`}</div>
+            · ${money(p.priceCents)} ${p.onAgreement ? "(court agreement)" : `(academy fee ${money(p.academyFeeCents)})`}</div>
         </div>
         ${p.studentId ? html`<label class="check small"><input type="checkbox" data-act="privPaid" data-id="${p.id}" ${raw(p.studentPaid ? 'checked' : '')}> Student paid</label>` : ''}
-        ${p.studentId && !p.onBudget ? html`<label class="check small"><input type="checkbox" data-act="privFee" data-id="${p.id}" ${raw(p.feePaid ? 'checked' : '')} ${raw(isAdmin() ? '' : 'disabled')}> Court fee in</label>` : ''}
+        ${p.studentId && !p.onAgreement ? html`<label class="check small"><input type="checkbox" data-act="privFee" data-id="${p.id}" ${raw(p.feePaid ? 'checked' : '')} ${raw(isAdmin() ? '' : 'disabled')}> Court fee in</label>` : ''}
         <button class="sm" data-act="editPrivate" data-id="${p.id}" data-student="${p.studentId || ''}">Edit</button>
       </div>`)}</div>`)
     : html`<div class="empty card">Nothing here. Post open times so students can book you, or add a lesson you've arranged.</div>`}`.s;
@@ -472,7 +472,8 @@ VIEWS.privates = async (params) => {
 VIEWS.hours = async (params) => {
   const month = params.get('month') || TT.currentMonth();
   const proId = params.get('pro') || '';
-  const h = await api('GET', `/api/staff/hours?month=${month}${proId ? `&proId=${proId}` : ''}`);
+  const q = `month=${month}${proId ? `&proId=${proId}` : ''}`;
+  const [h, agreement] = await Promise.all([api('GET', `/api/staff/hours?${q}`), api('GET', `/api/staff/court-agreement?${q}`)]);
   const p = h.private;
   $view.innerHTML = html`<div class="row between"><h1>${proId ? `${h.pro.name}'s hours` : 'My hours'}</h1>
       ${proId ? html`<a href="#payroll?month=${month}" class="btn sm">← Payroll</a>` : ''}</div>
@@ -484,9 +485,9 @@ VIEWS.hours = async (params) => {
       <div class="stat"><div class="n">${h.upcomingHours}</div><div class="l">Group hours still scheduled</div></div>
       <div class="stat"><div class="n">${money(h.groupPayCents)}</div><div class="l">Group pay at ${money(h.pro.hourlyRateCents)}/hr</div></div>
       <div class="stat"><div class="n">${p.n}</div><div class="l">${PLs()}</div></div>
-      ${!h.courtBudget ? html`<div class="stat"><div class="n">${money(p.feeOwedCents)}</div><div class="l">Court fees still owed to academy</div></div>` : ''}
+      ${!h.onAgreement ? html`<div class="stat"><div class="n">${money(p.feeOwedCents)}</div><div class="l">Court fees still owed to academy</div></div>` : ''}
     </div>
-    ${h.courtBudget ? courtBudgetCard(h.courtBudget, { proId: h.pro.id, name: h.pro.name, own: !proId }) : ''}
+    ${courtAgreementSection(agreement)}
     ${h.payrollPaid ? html`<div class="notice info">Group pay for ${TT.monthLabel(month)} marked paid (${money(h.payrollPaid.amountCents)}) on ${TT.fmtDate(h.payrollPaid.paidAt)}.</div>` : ''}
     <h2>Group lessons in ${TT.monthLabel(month)}</h2>
     ${h.sessions.length ? html`<div class="table-wrap"><table>
@@ -497,26 +498,88 @@ VIEWS.hours = async (params) => {
     </table></div>` : html`<p class="muted">No group lessons this month.</p>`}`.s;
 };
 
-// A budgeted pro's court hours for one month: on My hours (pro) and a pro's
-// hours page (owner).
-function courtBudgetCard(b, { proId, name, own }) {
-  const pct = b.hours ? Math.min(100, Math.round(b.scheduledHours / b.hours * 100)) : 100;
-  const pending = b.requests.filter((r) => r.status === 'pending');
-  const ended = b.month < TT.currentMonth();
+// ── Court agreements ──
+// Court times the owner rents from the park for a pro. The pro owes the court
+// fee on every agreed date, used or not; only the owner changes it, the pro asks.
+
+const clock = (m) => `${Math.floor(m / 60) % 12 || 12}:${String(m % 60).padStart(2, '0')} ${m < 720 ? 'am' : 'pm'}`;
+const blockTime = (x) => `${clock(x.startMinute)}–${clock(x.startMinute + x.minutes)}`;
+const dayLabel = (d) => new Date(`${d}T12:00:00Z`).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' });
+const todayLocal = () => TT.isoToZoned(new Date().toISOString()).slice(0, 10);
+const LENGTHS = [30, 60, 90, 120, 150, 180, 240, 300, 360, 480];
+
+function courtAgreementSection(a) {
+  const owner = isAdmin();
+  const pending = a.requests.filter((r) => r.status === 'pending');
+  const answered = a.requests.filter((r) => r.status !== 'pending').slice(0, 5);
   return html`<section class="card">
-    <div class="row between"><h2>Court-rental hours — ${TT.monthLabel(b.month)}</h2>
-      ${isAdmin() ? html`<button class="sm" data-act="editBudgetMonth" data-pro="${proId}" data-name="${name}" data-month="${b.month}" data-hours="${b.hours}" data-default="${b.defaultHours}">Change hours</button>` : ''}</div>
-    <p><strong>${b.scheduledHours}</strong> of <strong>${b.hours}</strong> hours on the schedule
-      ${b.changed ? html`<span class="small muted">(usually ${b.defaultHours})</span>` : ''}</p>
-    <div class="meter"><div style="width:${pct}%" class="${b.overBy ? 'over' : ''}"></div></div>
-    ${b.overBy ? html`<div class="notice warn" style="margin-top:8px">${b.overBy} hour${b.overBy === 1 ? '' : 's'} over budget. ${own ? 'Ask management for more hours below.' : 'Management decides whether to add hours.'}</div>` : ''}
-    <p class="small">Court fee on the budget: ${b.hours} hrs × ${money(b.feeCentsPerHour)} = <strong>${money(b.feeCents)}</strong>,
-      ${b.feePaidAt ? html`<span class="badge ok">received ${TT.fmtDate(b.feePaidAt)}</span>` : ended ? html`<span class="badge warn">still owed</span>` : 'due at the end of the month'}.
-      It's owed on the budgeted hours whether or not they're all used.</p>
-    ${pending.length ? html`<p class="small">Waiting for management: ${pending.map((r) => `+${r.hours} hrs`).join(', ')}</p>` : ''}
-    ${b.requests.filter((r) => r.status !== 'pending').slice(0, 3).map((r) => html`<p class="small muted">Request for +${r.hours} hrs ${r.status}.</p>`)}
-    ${own && !ended ? html`<button class="sm" data-act="requestHours" data-month="${b.month}">Ask for more hours</button>` : ''}
+    <div class="row between"><h2>Court agreement</h2>
+      ${owner ? html`<button class="sm primary" data-act="addBlock" data-pro="${a.pro.id}">+ Add court time</button>`
+        : html`<button class="sm" data-act="askBlock" data-kind="add">Ask for more court time</button>`}</div>
+    <p class="muted small">${owner
+      ? `Court times rented for ${a.pro.name}. They owe the court fee on every agreed date, used or not. Only you can change this.`
+      : 'Court times rented for you. You owe the court fee on every agreed date, used or not. Only the owner can change it — use the "Ask" buttons.'}</p>
+    ${a.blocks.length ? html`<div class="list">${a.blocks.map((b) => html`<div class="item">
+        <div class="main">${b.label}</div>
+        ${b.endsOn === b.startsOn ? '' : owner
+          ? html`<button class="sm" data-act="endBlock" data-id="${b.id}" data-label="${b.label}">End…</button>`
+          : html`<button class="sm" data-act="askBlock" data-kind="end" data-id="${b.id}" data-label="${b.label}">Ask to end…</button>`}
+      </div>`)}</div>`
+      : html`<p>No court agreement. ${owner ? `${a.pro.name} pays a court fee per ${pl()} instead.` : `You pay a court fee per ${pl()} instead.`}</p>`}
+    ${a.statement ? statementTable(a, owner) : ''}
+    ${pending.length ? html`<h3 style="margin-top:16px">Waiting for the owner</h3><div class="list">${pending.map((r) => html`<div class="item">
+        <div class="main">Asked to ${r.summary}${r.reason ? html` <span class="muted">("${r.reason}")</span>` : ''}
+          <div class="small muted">${TT.fmtDate(r.createdAt)}</div></div>
+        ${owner ? html`<button class="sm primary" data-act="answerCourtRequest" data-id="${r.id}" data-approve="1" data-summary="${r.summary}">Approve</button>
+            <button class="sm" data-act="answerCourtRequest" data-id="${r.id}">Decline</button>`
+          : html`<button class="sm" data-act="withdrawCourtRequest" data-id="${r.id}">Withdraw</button>`}
+      </div>`)}</div>` : ''}
+    ${answered.length ? html`<p class="small muted" style="margin-top:8px">${answered.map((r) => `Request to ${r.summary}: ${r.status}.`).join(' ')}</p>` : ''}
+    ${a.log.length ? html`<details style="margin-top:12px"><summary class="small">Change history</summary>
+      <ul class="small">${a.log.map((g) => html`<li>${TT.fmtDateTime(g.createdAt)} — ${g.text}</li>`)}</ul></details>` : ''}
   </section>`;
+}
+
+function statementTable(a, owner) {
+  const st = a.statement;
+  const ended = st.month < TT.currentMonth();
+  return html`<h3 style="margin-top:16px">${TT.monthLabel(st.month)} court bill</h3>
+    <div class="table-wrap"><table>
+      <tr><th>Date</th><th>Court</th><th>Time</th><th class="num">Hours</th><th></th></tr>
+      ${st.dates.map((d) => html`<tr class="${d.skip ? 'muted' : ''}">
+        <td>${dayLabel(d.date)}</td><td class="small">${d.locationName}, ${d.courtName}</td><td class="small">${blockTime(d)}</td>
+        <td class="num">${d.skip ? html`<s>${d.minutes / 60}</s>` : d.minutes / 60}</td>
+        <td class="small">${d.skip
+          ? html`<span class="badge">${d.skip.kind === 'waived' ? 'Waived' : 'Dropped'}</span> ${d.skip.reason || ''}
+              ${owner && !st.paidAt ? html`<button class="link small" data-act="undoSkip" data-id="${d.skip.id}">Undo</button>` : ''}`
+          : owner ? (st.paidAt ? '' : html`<button class="link small" data-act="skipDate" data-kind="waived" data-block="${d.blockId}" data-date="${d.date}">Waive (weather)</button> ·
+              <button class="link small" data-act="skipDate" data-kind="dropped" data-block="${d.blockId}" data-date="${d.date}">Drop</button>`)
+          : d.date >= a.today ? html`<button class="link small" data-act="askBlock" data-kind="drop" data-id="${d.blockId}" data-date="${d.date}">Ask to drop</button>` : ''}</td>
+      </tr>`)}
+    </table></div>
+    <p style="margin-top:8px">Billed <strong>${st.billedHours} hrs</strong> × ${money(st.rateCents)} = <strong>${money(st.owedCents)}</strong>
+      ${st.waivedHours ? html`<span class="small muted"> · ${st.waivedHours} hrs waived</span>` : ''}
+      ${st.droppedHours ? html`<span class="small muted"> · ${st.droppedHours} hrs dropped</span>` : ''}
+      ${st.paidAt ? html` <span class="badge ok">Received ${TT.fmtDate(st.paidAt)}</span>`
+        : html` <span class="badge warn">${ended ? 'Owed' : 'Due at the end of the month'}</span>`}</p>
+    ${st.paidAt && st.paidHours !== st.billedHours ? html`<p class="small muted">Received for ${st.paidHours} hrs; the dates above changed afterwards.</p>` : ''}
+    ${owner ? (st.paidAt
+      ? html`<button class="sm" data-act="courtPaid" data-pro="${a.pro.id}" data-month="${st.month}">Undo "received"</button>`
+      : html`<button class="sm primary" data-act="courtPaid" data-pro="${a.pro.id}" data-month="${st.month}" data-paid="1" data-amount="${st.owedCents}" data-name="${a.pro.name}">Mark ${money(st.owedCents)} received</button>`) : ''}`;
+}
+
+// Fields for a new block (owner adding, or a pro asking).
+async function blockFields() {
+  const locs = await locations();
+  return html`<label>Court</label><select name="courtId">${courtOptions(locs)}</select>
+    <div class="form-row">
+      <div><label>First date</label><input name="date" type="date" value="${todayLocal()}"></div>
+      <div><label>Repeats</label><select name="repeat"><option value="weekly">Every week on that day</option><option value="once">Just that date</option></select></div>
+      <div><label>Start time</label><input name="startTime" type="time" value="16:00"></div>
+      <div><label>Length</label><select name="minutes">${raw(LENGTHS.map((m) => html`<option value="${m}" ${raw(m === 120 ? 'selected' : '')}>${m < 60 ? `${m} min` : `${m / 60} hr${m === 60 ? '' : 's'}`}</option>`.s).join(''))}</select></div>
+    </div>
+    <label>Last date (optional, weekly only)</label><input name="endsOn" type="date">
+    <p class="hint">Weekly blocks keep going every month until they're ended.</p>`;
 }
 
 // ── Admin views ──────────────────────────────────────────────
@@ -533,7 +596,7 @@ VIEWS.dashboard = async () => {
   ];
   const todo = steps.filter((x) => !x[0]);
   $view.innerHTML = html`<h1>Dashboard</h1>
-    ${s.courtRequests ? html`<div class="notice info">${s.courtRequests} request${s.courtRequests === 1 ? '' : 's'} for more court hours —
+    ${s.courtRequests ? html`<div class="notice info">${s.courtRequests} court agreement request${s.courtRequests === 1 ? '' : 's'} from pros —
       <a href="#payroll">answer in Payroll</a>.</div>` : ''}
     <div class="stats">
       <div class="stat"><div class="n">${money(s.revenueCents)}</div><div class="l">Lesson sales in ${TT.monthLabel(s.month)}</div></div>
@@ -561,14 +624,14 @@ VIEWS.payroll = async (params) => {
   const tot = r.rows.reduce((a, x) => ({ h: a.h + x.groupHours, pay: a.pay + x.groupPayCents, fee: a.fee + x.courtFeesOwedCents }), { h: 0, pay: 0, fee: 0 });
   $view.innerHTML = html`<h1>Payroll</h1>
     <p class="muted">Group-lesson hours count once a lesson has ended and wasn't cancelled. Court fees are what each pro owes the academy:
-      per ${pl()} hour, or on their monthly court-hour budget if they have one.</p>
-    ${r.requests.length ? html`<section class="card"><h2>Requests for more court hours</h2><div class="list">
+      per ${pl()} hour, or on every date of their court agreement if they have one.</p>
+    ${r.requests.length ? html`<section class="card"><h2>Court agreement requests</h2><div class="list">
       ${r.requests.map((q) => html`<div class="item"><div class="main">
-          <div><strong>${q.proName}</strong> asks for <strong>+${q.hours} hrs</strong> in ${TT.monthLabel(q.month)}</div>
+          <div><strong>${q.proName}</strong> asks to ${q.summary}</div>
           ${q.reason ? html`<div class="small muted">"${q.reason}"</div>` : ''}
           <div class="small muted">Asked ${TT.fmtDate(q.createdAt)}</div></div>
-        <button class="sm primary" data-act="answerRequest" data-id="${q.id}" data-approve="1">Approve</button>
-        <button class="sm" data-act="answerRequest" data-id="${q.id}">Decline</button></div>`)}
+        <button class="sm primary" data-act="answerCourtRequest" data-id="${q.id}" data-approve="1" data-summary="${q.summary}">Approve</button>
+        <button class="sm" data-act="answerCourtRequest" data-id="${q.id}">Decline</button></div>`)}
     </div></section>` : ''}
     <div class="row" style="margin-bottom:12px"><select data-change="payrollMonth" style="max-width:220px">${monthOptions(month)}</select></div>
     <div class="stats">
@@ -586,7 +649,7 @@ VIEWS.payroll = async (params) => {
         <td class="num">${x.hourlyRateCents ? money(x.hourlyRateCents) : html`<button class="link small" data-act="editUser" data-id="${x.proId}">Set rate</button>`}</td>
         <td class="num"><strong>${money(x.groupPayCents)}</strong></td>
         <td class="num">${x.privateLessons}</td>
-        <td class="num">${x.courtBudget ? budgetCell(x, month)
+        <td class="num">${x.agreement ? agreementCell(x, month)
           : html`${money(x.courtFeesOwedCents)}${x.courtFeesCents > x.courtFeesOwedCents ? html`<div class="small muted">${money(x.courtFeesCents - x.courtFeesOwedCents)} received</div>` : ''}`}</td>
         <td>${x.paid ? html`<span class="badge ok">Paid ${money(x.paid.amountCents)}</span> <button class="link small" data-act="payrollUndo" data-id="${x.proId}" data-month="${month}">Undo</button>`
           : html`<button class="sm" data-act="payrollPaid" data-id="${x.proId}" data-month="${month}" data-name="${x.name}" data-amount="${x.groupPayCents}">Mark paid</button>`}</td>
@@ -594,16 +657,12 @@ VIEWS.payroll = async (params) => {
     </table></div>` : html`<div class="empty card">No pro activity this month.</div>`}`.s;
 };
 
-function budgetCell(x, month) {
-  const b = x.courtBudget;
-  return html`<div><strong>${money(b.feePaidAt ? 0 : b.feeCents)}</strong></div>
-    ${b.feePaidAt ? html`<div class="small muted">${money(b.feeCents)} received</div>` : ''}
-    <div class="small muted">Budget ${b.hours} hrs · ${b.scheduledHours} scheduled</div>
-    ${b.overBy ? html`<div class="small"><span class="badge warn">${b.overBy} hrs over</span></div>` : ''}
-    <div class="small">
-      <button class="link small" data-act="editBudgetMonth" data-pro="${x.proId}" data-name="${x.name}" data-month="${month}" data-hours="${b.hours}" data-default="${b.defaultHours}">Change hours</button> ·
-      <label class="check small" style="display:inline-flex"><input type="checkbox" data-act="budgetFee" data-pro="${x.proId}" data-month="${month}" ${raw(b.feePaidAt ? 'checked' : '')}> Fee in</label>
-    </div>`;
+function agreementCell(x, month) {
+  const a = x.agreement;
+  return html`<div><strong>${money(a.paidAt ? 0 : a.owedCents)}</strong></div>
+    ${a.paidAt ? html`<div class="small muted">${money(a.owedCents)} received</div>` : ''}
+    <div class="small muted">Court agreement · ${a.billedHours} hrs${a.waivedHours ? ` (${a.waivedHours} waived)` : ''}</div>
+    <a class="small" href="#hours?month=${month}&pro=${x.proId}">View bill</a>`;
 }
 
 VIEWS.payments = async (params) => {
@@ -672,13 +731,14 @@ VIEWS.setup = async () => {
     <section class="card">
       <div class="row between"><h2>Tennis pros & staff</h2><button class="sm primary" data-act="newUser" data-role="pro">+ Pro</button></div>
       <div class="table-wrap" style="margin-top:8px"><table>
-        <tr><th>Name</th><th>Role</th><th class="num">Group pay/hr</th><th class="num">Private rate/hr</th><th class="num">Court hrs/month</th><th>Zelle</th><th></th></tr>
+        <tr><th>Name</th><th>Role</th><th class="num">Group pay/hr</th><th class="num">Private rate/hr</th><th>Zelle</th><th></th></tr>
         ${[...admins, ...staff].map((u) => html`<tr>
           <td>${u.name}${u.active ? '' : html` <span class="badge">Inactive</span>`}<div class="small muted">${u.email}</div></td>
           <td>${u.role === 'admin' ? 'Owner' : 'Pro'}</td>
-          <td class="num">${money(u.hourlyRateCents)}</td><td class="num">${money(u.privateRateCents)}</td><td class="num">${u.courtBudgetHours ?? "Per lesson"}</td>
+          <td class="num">${money(u.hourlyRateCents)}</td><td class="num">${money(u.privateRateCents)}</td>
           <td class="small">${u.zelleHandle || '—'}</td>
-          <td><button class="sm" data-act="editUser" data-id="${u.id}">Edit</button></td></tr>`)}
+          <td><button class="sm" data-act="editUser" data-id="${u.id}">Edit</button>
+            <a class="btn sm" href="#hours?pro=${u.id}">Court times</a></td></tr>`)}
       </table></div>
     </section>
 
@@ -920,15 +980,12 @@ async function userModal(id, role) {
       <div class="form-row">
         <div><label>Group-lesson pay per hour ($)</label><input name="hourly" inputmode="decimal" value="${((u.hourlyRateCents || 0) / 100).toFixed(2)}"><p class="hint">What the academy pays this pro.</p></div>
         <div><label>${PL()} rate per hour ($)</label><input name="private" inputmode="decimal" value="${u.privateRateCents != null ? (u.privateRateCents / 100).toFixed(2) : '100.00'}"><p class="hint">What students pay the pro.</p></div>
-        ${u.role !== 'student' ? html`<div><label>Monthly court-rental hours</label><input name="courtBudget" inputmode="decimal" value="${u.courtBudgetHours ?? ''}" placeholder="Blank = fee per lesson">
-          <p class="hint">The pro owes the court fee on these hours each month, used or not. Blank = court fee per ${pl()} instead.</p></div>` : ''}
       </div>
       ${!isNew ? html`<label>Zelle</label><input name="zelleHandle" value="${u.zelleHandle || ''}">
         <label class="check" style="margin-top:12px"><input type="checkbox" name="active" ${raw(u.active ? 'checked' : '')}> Active (can log in)</label>` : ''}`,
     onSubmit: async (v) => {
       const body = { name: v.name, phone: v.phone, role: v.role, hourlyRateCents: TT.dollarsToCents(v.hourly || 0), privateRateCents: TT.dollarsToCents(v.private || 0) };
       if (v.level) body.level = v.level;
-      if (v.courtBudget !== undefined) body.courtBudgetHours = v.courtBudget.trim();
       if (isNew) {
         const r = await api('POST', '/api/admin/users', { ...body, email: v.email });
         S.pros = null;
@@ -1015,7 +1072,6 @@ async function privateModal(existingId, currentStudent) {
     onSubmit: async (v) => {
       const r = await api('POST', '/api/staff/private', { ...v, startsAt: TT.zonedToIso(v.startsAt), studentId: v.studentId || null });
       toast(`Added ${r.created} lesson${r.created === 1 ? '' : 's'}`); rerender();
-      if (r.budgetWarning) setTimeout(() => modal({ title: 'Over the court-hour budget', body: html`<p>${r.budgetWarning}</p>` }), 50);
     },
   });
 }
@@ -1281,34 +1337,64 @@ const acts = {
     if (!(await confirmBox(`Mark ${d.name} paid?`, `Records ${money(d.amount)} group-lesson pay for ${TT.monthLabel(d.month)} as paid. Pay them through your usual payroll.`, 'Mark paid', false))) return;
     await api('POST', '/api/admin/payroll/mark-paid', { proId: d.id, month: d.month }); rerender();
   },
-  editBudgetMonth(el) {
+  async addBlock(el) {
+    modal({
+      title: 'Add court time',
+      body: await blockFields(),
+      onSubmit: async (v) => { await api('POST', '/api/admin/court-blocks', { proId: el.dataset.pro, ...v }); toast('Court time added'); rerender(); },
+    });
+  },
+  endBlock(el) {
+    modal({
+      title: 'End this court time',
+      body: html`<p>${el.dataset.label}</p><label>Last date it's rented</label><input name="lastDate" type="date" value="${todayLocal()}">
+        <p class="hint">Dates after this come off the agreement. Pick a date before the first date to remove it entirely.</p>`,
+      onSubmit: async (v) => { await api('POST', `/api/admin/court-blocks/${el.dataset.id}/end`, v); toast('Updated'); rerender(); },
+    });
+  },
+  async askBlock(el) {
     const d = el.dataset;
+    const reason = html`<label>Why (optional)</label><input name="reason" maxlength="300">`;
+    const commit = html`<p class="hint">Nothing changes until the owner approves. Once approved, you're committed to it.</p>`;
+    const bodies = {
+      add: html`${await blockFields()}${reason}${commit}`,
+      end: html`<p>${d.label}</p><label>Last date you need it</label><input name="date" type="date" value="${todayLocal()}">${reason}${commit}`,
+      drop: html`<p>Drop ${dayLabel(d.date)} from your court agreement?</p>${reason}${commit}`,
+    };
     modal({
-      title: `${d.name}: court hours for ${TT.monthLabel(d.month)}`,
-      body: html`<label>Court-rental hours this month</label><input name="hours" inputmode="decimal" value="${d.hours}">
-        <p class="hint">Usually ${d.default} hrs a month. Leave blank to go back to that. To change every month, use Setup → Edit on the pro.</p>`,
-      onSubmit: async (v) => { await api('PUT', '/api/admin/court-budget', { proId: d.pro, month: d.month, hours: v.hours.trim() }); toast('Hours updated'); rerender(); },
+      title: { add: 'Ask for more court time', end: 'Ask to end this court time', drop: 'Ask to drop a date' }[d.kind],
+      body: bodies[d.kind], submitLabel: 'Send request',
+      onSubmit: async (v) => {
+        await api('POST', '/api/staff/court-requests', { kind: d.kind, blockId: d.id, ...(d.date ? { date: d.date } : {}), ...v });
+        toast('Request sent to the owner'); rerender();
+      },
     });
   },
-  async budgetFee(el) {
-    try {
-      await api('POST', '/api/admin/court-budget/fee', { proId: el.dataset.pro, month: el.dataset.month, paid: el.checked });
-      toast(el.checked ? 'Court fee received' : 'Court fee unmarked'); rerender();
-    } catch (err) { toast(err.message, true); el.checked = !el.checked; }
-  },
-  requestHours(el) {
+  skipDate(el) {
+    const d = el.dataset;
+    const waive = d.kind === 'waived';
     modal({
-      title: `Ask for more court hours — ${TT.monthLabel(el.dataset.month)}`,
-      body: html`<label>Extra hours</label><input name="hours" inputmode="decimal" placeholder="e.g. 4">
-        <label>Why (optional)</label><input name="reason" maxlength="300" placeholder="e.g. Two new private students">
-        <p class="hint">Management will approve or decline it. The court fee is owed on approved hours.</p>`,
-      submitLabel: 'Send request',
-      onSubmit: async (v) => { await api('POST', '/api/staff/court-requests', { month: el.dataset.month, ...v }); toast('Request sent to management'); rerender(); },
+      title: `${waive ? 'Waive' : 'Drop'} ${dayLabel(d.date)}`,
+      body: html`<p>This date comes off the bill${waive ? ' — you\'re letting the pro off (e.g. rain)' : ''}. It's recorded in the change history.</p>
+        <label>Reason${waive ? '' : ' (optional)'}</label><input name="reason" maxlength="200" value="${waive ? 'Rain' : ''}">`,
+      submitLabel: waive ? 'Waive it' : 'Drop it',
+      onSubmit: async (v) => { await api('POST', `/api/admin/court-blocks/${d.block}/skip`, { date: d.date, kind: d.kind, reason: v.reason }); toast('Updated'); rerender(); },
     });
   },
-  async answerRequest(el) {
-    await api('POST', `/api/admin/court-requests/${el.dataset.id}`, { approve: el.dataset.approve === '1' });
-    toast(el.dataset.approve === '1' ? 'Approved — hours added' : 'Declined'); rerender();
+  async undoSkip(el) { await api('DELETE', `/api/admin/court-skips/${el.dataset.id}`); toast('Back on the bill'); rerender(); },
+  async courtPaid(el) {
+    const d = el.dataset;
+    if (d.paid && !(await confirmBox(`Mark ${money(d.amount)} received?`, `Records ${d.name}'s ${TT.monthLabel(d.month)} court fee as paid. The amount is locked in.`, 'Mark received', false))) return;
+    await api('POST', '/api/admin/court-statement/paid', { proId: d.pro, month: d.month, paid: !!d.paid }); rerender();
+  },
+  async answerCourtRequest(el) {
+    const d = el.dataset;
+    if (d.approve && !(await confirmBox('Approve this request?', `This will ${d.summary}. The pro is committed to it from now on.`, 'Approve', false))) return;
+    await api('POST', `/api/admin/court-requests/${d.id}`, { approve: !!d.approve });
+    toast(d.approve ? 'Approved — agreement updated' : 'Declined'); rerender();
+  },
+  async withdrawCourtRequest(el) {
+    await api('POST', `/api/staff/court-requests/${el.dataset.id}/withdraw`); toast('Request withdrawn'); rerender();
   },
   async payrollUndo(el) { await api('POST', '/api/admin/payroll/mark-paid', { proId: el.dataset.id, month: el.dataset.month, undo: true }); rerender(); },
 

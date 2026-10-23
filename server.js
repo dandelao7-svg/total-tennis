@@ -113,7 +113,6 @@ function publicUser(u) {
     hourlyRateCents: u.hourly_rate_cents, privateRateCents: u.private_rate_cents,
     zelleHandle: u.zelle_handle, active: u.active, createdAt: u.created_at,
     smsOptIn: u.sms_opt_in,
-    courtBudgetHours: u.court_budget_hours == null ? null : Number(u.court_budget_hours),
   };
 }
 
@@ -1059,7 +1058,11 @@ const PRIVATE_SELECT = `
          p.price_cents AS "priceCents", p.academy_fee_cents AS "academyFeeCents",
          p.student_paid AS "studentPaid", p.fee_paid AS "feePaid", p.notes,
          p.pro_id AS "proId", pu.name AS "proName", pu.zelle_handle AS "proZelle",
-         (pu.court_budget_hours IS NOT NULL) AS "onBudget",
+         -- In a month the pro is on a court agreement, the fee is on the agreement, not per rental.
+         EXISTS (SELECT 1 FROM court_blocks cb, academies ca WHERE ca.id = p.academy_id AND cb.pro_id = p.pro_id
+                   AND (cb.ends_on IS NULL OR cb.ends_on >= cb.starts_on)
+                   AND cb.starts_on <= (date_trunc('month', p.starts_at AT TIME ZONE ca.timezone) + interval '1 month - 1 day')::date
+                   AND COALESCE(cb.ends_on, '9999-12-31') >= date_trunc('month', p.starts_at AT TIME ZONE ca.timezone)::date) AS "onAgreement",
          p.student_id AS "studentId", su.name AS "studentName", su.phone AS "studentPhone", su.email AS "studentEmail",
          p.court_id AS "courtId", c.name AS "courtName", l.name AS "locationName"
     FROM private_lessons p
@@ -1068,7 +1071,7 @@ const PRIVATE_SELECT = `
     JOIN courts c ON c.id = p.court_id
     JOIN locations l ON l.id = c.location_id`;
 
-const studentView = ({ academyFeeCents, feePaid, studentEmail, studentPhone, onBudget, ...r }) => r;
+const studentView = ({ academyFeeCents, feePaid, studentEmail, studentPhone, onAgreement, ...r }) => r;
 
 app.get('/api/private/open', requireAuth, async (req, res) => {
   const rows = await db.many(
@@ -1202,7 +1205,10 @@ app.post('/api/staff/sessions', requireAuth, requireStaff, async (req, res) => {
   const created = await db.tx(async (t) => {
     const starts = await weeklyStarts(t, req.tz, startsAt, weeks);
     const clashes = [];
-    for (const s of starts) clashes.push(...await findConflicts(t, { startsAt: s, minutes, courtId, proId }));
+    for (const s of starts) {
+      clashes.push(...await findConflicts(t, { startsAt: s, minutes, courtId, proId }));
+      clashes.push(...await blockConflicts(t, req.tz, { startsAt: s, minutes, courtId }));
+    }
     if (clashes.length) throw conflictError(req.tz, clashes);
     for (const s of starts) {
       await t.query(
@@ -1260,7 +1266,8 @@ app.put('/api/staff/sessions/:id', requireAuth, requireStaff, async (req, res) =
   const capacity = int(req.body.capacity ?? s.capacity, 'Capacity', { min: Math.max(1, s.booked), max: 40 });
   const notes = req.body.notes !== undefined ? str(req.body.notes, 'Notes', { optional: true }) : s.notes;
   await db.tx(async (t) => {
-    const clashes = await findConflicts(t, { startsAt, minutes, courtId, proId, skipGroupId: s.id });
+    const clashes = [...await findConflicts(t, { startsAt, minutes, courtId, proId, skipGroupId: s.id }),
+      ...await blockConflicts(t, req.tz, { startsAt, minutes, courtId })];
     if (clashes.length) throw conflictError(req.tz, clashes);
     await t.query(
       `UPDATE group_sessions SET level=$2, starts_at=$3, duration_minutes=$4, court_id=$5, pro_id=$6, capacity=$7, notes=$8
@@ -1453,8 +1460,22 @@ app.post('/api/staff/private', requireAuth, requireStaff, async (req, res) => {
   const n = await db.tx(async (t) => {
     const starts = await weeklyStarts(t, req.tz, startsAt, weeks);
     const clashes = [];
-    for (const s of starts) clashes.push(...await findConflicts(t, { startsAt: s, minutes, courtId, proId }));
+    for (const s of starts) {
+      clashes.push(...await findConflicts(t, { startsAt: s, minutes, courtId, proId }));
+      clashes.push(...await blockConflicts(t, req.tz, { startsAt: s, minutes, courtId, rentalProId: proId }));
+    }
     if (clashes.length) throw conflictError(req.tz, clashes);
+    // A pro on a court agreement rents only inside their own agreed blocks.
+    for (const s of starts) {
+      if (!(await onAgreement(t, proId, monthOf(req.tz, new Date(s))))) continue;
+      const { date, minute } = localParts(s, req.tz);
+      const own = (await blockAt(t, req.tz, { startsAt: s, minutes, courtId }))
+        .find((b) => b.proId === proId && b.startMinute <= minute && minute + minutes <= b.startMinute + b.minutes);
+      if (!own) {
+        fail(409, `${fmtDay(date)} at ${clock(minute)} on that court isn't in ${proId === req.user.id ? 'your' : `${pro.name}'s`} court agreement. `
+          + `Only agreed court times can be used — ${proId === req.user.id ? 'ask the owner to add it under My hours' : 'add it under Payroll → their hours first'}. Nothing was saved.`);
+      }
+    }
     for (const s of starts) {
       await t.query(
         `INSERT INTO private_lessons (academy_id, pro_id, student_id, starts_at, duration_minutes, court_id, price_cents, academy_fee_cents, status, notes)
@@ -1463,14 +1484,7 @@ app.post('/api/staff/private', requireAuth, requireStaff, async (req, res) => {
     }
     return starts.length;
   });
-  // Over budget is allowed — management decides — but say so straight away.
-  const month = monthOf(req.tz, new Date(startsAt));
-  const budget = await courtBudget(req.academy, pro, month);
-  res.json({
-    created: n,
-    ...(budget && budget.overBy ? { budgetWarning: `${pro.name} now has ${budget.scheduledHours} court hours scheduled in ${monthName(month)}, `
-      + `${budget.overBy} over the ${budget.hours}-hour budget. Ask management for more hours under My hours.` } : {}),
-  });
+  res.json({ created: n });
 });
 
 app.get('/api/staff/private', requireAuth, requireStaff, async (req, res) => {
@@ -1540,131 +1554,387 @@ async function proMonth(aid, tz, proId, month) {
   return { sessions, groupHours: doneMin / 60, upcomingHours: upcomingMin / 60, private: priv };
 }
 
-// ── Pro court-hour budgets ──
-// Management sets how many court-rental hours a pro gets each month; the pro
-// owes the court fee on those hours whether used or not. Going over is
-// allowed (management decides) but flagged; pros ask for more via a request.
+// ── Pro court agreements ──
+// The owner rents specific courts at specific times from the park and prepays
+// them; a pro on an agreement owes the court fee for every agreed block in the
+// month, used or not. Blocks repeat weekly (or are one date). Only the owner
+// changes an agreement; a pro asks, and is committed once the owner approves.
+// The owner can waive a date (e.g. rain). Every change is logged.
 
-function hoursOf(v, name = 'Hours') {
-  const n = Number(v);
-  if (v === '' || v === null || v === undefined || !Number.isFinite(n) || n < 0 || n > 744) fail(400, `${name} is invalid`);
-  return Math.round(n * 100) / 100;
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const FOREVER = '9999-12-31';
+const dowOf = (d) => new Date(`${d}T12:00:00Z`).getUTCDay();
+const addDays = (d, n) => new Date(Date.parse(`${d}T12:00:00Z`) + n * 864e5).toISOString().slice(0, 10);
+const clock = (m) => {
+  const h = Math.floor(m / 60), mm = String(m % 60).padStart(2, '0');
+  return `${h % 12 || 12}:${mm} ${h < 12 ? 'am' : 'pm'}`;
+};
+const fmtDay = (d) => new Date(`${d}T12:00:00Z`).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' });
+// Today's date ('YYYY-MM-DD') in the academy's time zone.
+const todayIn = (tz) => new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(new Date());
+
+// Local date and minutes-after-midnight of an instant, in `tz`.
+function localParts(iso, tz) {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+  }).formatToParts(new Date(iso)).map((x) => [x.type, x.value]));
+  return { date: `${p.year}-${p.month}-${p.day}`, minute: Number(p.hour) * 60 + Number(p.minute) };
 }
-const hasBudget = (pro, month) => pro.court_budget_hours != null && (!pro.court_budget_since || month >= pro.court_budget_since);
 
-async function courtBudget(academy, pro, month) {
-  if (!hasBudget(pro, month)) return null;
-  const row = await db.one('SELECT * FROM pro_court_months WHERE pro_id = $1 AND month = $2', [pro.id, month]);
-  const hours = Number(row && row.hours != null ? row.hours : pro.court_budget_hours);
-  const rate = row && row.fee_cents_per_hour != null ? row.fee_cents_per_hour : db.settingsOf(academy).private_court_fee_cents_per_hour;
-  const used = await db.one(
-    `SELECT COALESCE(sum(duration_minutes), 0)::int AS mins FROM private_lessons
-      WHERE academy_id = $1 AND pro_id = $2 AND status <> 'cancelled'
-        AND to_char(starts_at AT TIME ZONE $4, 'YYYY-MM') = $3`, [academy.id, pro.id, month, academy.timezone]);
-  const requests = await db.many(
-    `SELECT id, hours::float AS hours, reason, status, created_at AS "createdAt", decided_at AS "decidedAt"
-       FROM court_hour_requests WHERE pro_id = $1 AND month = $2 ORDER BY id DESC`, [pro.id, month]);
-  const scheduledHours = used.mins / 60;
+function dateOf(v, name) {
+  if (!isDate(v) || Number.isNaN(Date.parse(`${v}T12:00:00Z`))) fail(400, `${name} is invalid`);
+  return v;
+}
+function timeOf(v, name = 'Start time') {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(v || ''));
+  if (!m || +m[1] > 23 || +m[2] > 59) fail(400, `${name} is invalid`);
+  return +m[1] * 60 + +m[2];
+}
+
+const BLOCK_SELECT = `
+  SELECT b.id, b.pro_id AS "proId", b.court_id AS "courtId", c.name AS "courtName", l.name AS "locationName",
+         b.weekday, b.start_minute AS "startMinute", b.minutes, b.starts_on::text AS "startsOn", b.ends_on::text AS "endsOn"
+    FROM court_blocks b JOIN courts c ON c.id = b.court_id JOIN locations l ON l.id = c.location_id`;
+// A block whose end is before its start was removed before it began.
+const LIVE_BLOCK = `(b.ends_on IS NULL OR b.ends_on >= b.starts_on)`;
+
+const describeBlock = (b) => {
+  const where = `${b.locationName}, ${b.courtName}`;
+  const time = `${clock(b.startMinute)}–${clock(b.startMinute + b.minutes)}`;
+  if (b.endsOn && b.endsOn === b.startsOn) return `${where}, ${fmtDay(b.startsOn)}, ${time}`;
+  return `${where}, ${WEEKDAYS[b.weekday]}s ${time}, from ${fmtDay(b.startsOn)}${b.endsOn ? ` to ${fmtDay(b.endsOn)}` : ''}`;
+};
+
+async function logAgreement(q, aid, proId, byId, text) {
+  await q.query('INSERT INTO court_agreement_log (academy_id, pro_id, by_user, text) VALUES ($1,$2,$3,$4)', [aid, proId, byId, text]);
+}
+
+// Does this pro have any agreed block in `month`?
+async function onAgreement(q, proId, month) {
+  return !!(await q.query(
+    `SELECT 1 FROM court_blocks b WHERE b.pro_id = $1 AND ${LIVE_BLOCK}
+        AND b.starts_on <= $3::date AND COALESCE(b.ends_on, '${FOREVER}') >= $2::date LIMIT 1`,
+    [proId, `${month}-01`, endOfMonth(month)])).rows[0];
+}
+
+// The block occurrence covering [startsAt, +minutes) on a court, if any.
+async function blockAt(q, tz, { startsAt, minutes, courtId }) {
+  const { date, minute } = localParts(startsAt, tz);
+  return (await q.query(
+    `${BLOCK_SELECT} WHERE b.court_id = $1 AND ${LIVE_BLOCK} AND b.weekday = $2
+        AND b.starts_on <= $3::date AND COALESCE(b.ends_on, '${FOREVER}') >= $3::date
+        AND b.start_minute < $5 AND $4 < b.start_minute + b.minutes
+        AND NOT EXISTS (SELECT 1 FROM court_block_skips s WHERE s.block_id = b.id AND s.on_date = $3::date)`,
+    [courtId, dowOf(date), date, minute, minute + minutes])).rows.map((b) => ({ ...b, date, minute }));
+}
+
+// Court-agreement clashes for something being scheduled on a court. A pro's
+// own court rentals inside their own block are the point of the block.
+async function blockConflicts(q, tz, { startsAt, minutes, courtId, rentalProId = null }) {
+  return (await blockAt(q, tz, { startsAt, minutes, courtId }))
+    .filter((b) => !(rentalProId && b.proId === rentalProId && b.startMinute <= b.minute && b.minute + minutes <= b.startMinute + b.minutes))
+    .map((b) => ({ kind: 'rented to a pro', startsAt, court: b.courtName, pro: '', sameCourt: true }));
+}
+
+// Refuse a block that overlaps another pro's block, or anything already
+// scheduled on that court (other than the same pro's own rentals).
+async function checkNewBlock(t, academy, blk, skipBlockId = null) {
+  const clash = (await t.query(
+    `${BLOCK_SELECT} WHERE b.court_id = $1 AND ${LIVE_BLOCK} AND b.weekday = $2 AND b.id <> COALESCE($7::int, -1)
+        AND b.start_minute < $3::int + $4::int AND $3::int < b.start_minute + b.minutes
+        AND b.starts_on <= COALESCE($6::date, '${FOREVER}') AND COALESCE(b.ends_on, '${FOREVER}') >= $5::date LIMIT 1`,
+    [blk.courtId, blk.weekday, blk.startMinute, blk.minutes, blk.startsOn, blk.endsOn, skipBlockId])).rows[0];
+  if (clash) fail(409, `That overlaps another court agreement: ${describeBlock(clash)}`);
+  const local = (col) => `EXTRACT(HOUR FROM ${col} AT TIME ZONE $7) * 60 + EXTRACT(MINUTE FROM ${col} AT TIME ZONE $7)`;
+  const where = (alias) => `${alias}.court_id = $1 AND ${alias}.starts_at > now()
+        AND EXTRACT(DOW FROM ${alias}.starts_at AT TIME ZONE $7) = $2
+        AND (${alias}.starts_at AT TIME ZONE $7)::date BETWEEN $5::date AND COALESCE($6::date, '${FOREVER}')
+        AND ${local(`${alias}.starts_at`)} < $3::int + $4::int AND $3::int < ${local(`${alias}.starts_at`)} + ${alias}.duration_minutes`;
+  const busy = (await t.query(
+    `SELECT 'group lesson' AS kind, g.starts_at AS "startsAt" FROM group_sessions g WHERE g.status = 'scheduled' AND ${where('g')}
+     UNION ALL
+     SELECT 'court rental', p.starts_at FROM private_lessons p WHERE p.status <> 'cancelled' AND p.pro_id <> $8 AND ${where('p')}
+     ORDER BY 2 LIMIT 1`,
+    [blk.courtId, blk.weekday, blk.startMinute, blk.minutes, blk.startsOn, blk.endsOn, academy.timezone, blk.proId])).rows[0];
+  if (busy) {
+    const when = new Intl.DateTimeFormat('en-US', { timeZone: academy.timezone, dateStyle: 'medium', timeStyle: 'short' }).format(new Date(busy.startsAt));
+    fail(409, `That court already has a ${busy.kind} at ${when}. Move or cancel it first.`);
+  }
+}
+
+// Validates and creates a block. `b` comes from a form or an approved request.
+async function addBlock(t, academy, b, byId, logPrefix) {
+  const court = (await t.query(
+    `SELECT c.id FROM courts c JOIN locations l ON l.id = c.location_id WHERE c.id = $1 AND c.academy_id = $2 AND c.active AND l.active`,
+    [b.courtId, academy.id])).rows[0];
+  if (!court) fail(400, 'Pick an active court');
+  if (b.minutes < 30 || b.minutes > 12 * 60 || b.startMinute + b.minutes > 24 * 60) fail(400, 'Pick a length between 30 minutes and 12 hours, ending by midnight');
+  if (b.endsOn && b.endsOn < b.startsOn) fail(400, 'The end date is before the start date');
+  const blk = { ...b, weekday: dowOf(b.startsOn) };
+  await checkNewBlock(t, academy, blk);
+  const row = (await t.query(
+    `INSERT INTO court_blocks (academy_id, pro_id, court_id, weekday, start_minute, minutes, starts_on, ends_on, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+    [academy.id, blk.proId, blk.courtId, blk.weekday, blk.startMinute, blk.minutes, blk.startsOn, blk.endsOn || null, byId])).rows[0];
+  const full = (await t.query(`${BLOCK_SELECT} WHERE b.id = $1`, [row.id])).rows[0];
+  await logAgreement(t, academy.id, blk.proId, byId, `${logPrefix}: added ${describeBlock(full)}.`);
+  return full;
+}
+
+// Ends a weekly block after `lastDate` (the day before its start removes it).
+async function endBlock(t, academy, block, lastDate, byId, logPrefix) {
+  if (block.endsOn && block.endsOn <= lastDate) fail(400, `That block already ends ${fmtDay(block.endsOn)}`);
+  await t.query('UPDATE court_blocks SET ends_on = $2, ended_by = $3, ended_at = now() WHERE id = $1', [block.id, lastDate, byId]);
+  await logAgreement(t, academy.id, block.proId, byId, lastDate < block.startsOn
+    ? `${logPrefix}: removed ${describeBlock(block)}.`
+    : `${logPrefix}: ended ${describeBlock(block)} — last date ${fmtDay(lastDate)}.`);
+}
+
+// Takes one date of a block off the bill: 'dropped' (agreed change) or
+// 'waived' (the owner let the pro off, e.g. rain).
+async function skipDate(t, academy, block, date, kind, reason, byId, logPrefix) {
+  if (dowOf(date) !== block.weekday || date < block.startsOn || (block.endsOn && date > block.endsOn)) {
+    fail(400, `${fmtDay(date)} isn't one of the dates of that block`);
+  }
+  const r = (await t.query(
+    `INSERT INTO court_block_skips (academy_id, block_id, on_date, kind, reason, created_by) VALUES ($1,$2,$3,$4,$5,$6)
+     ON CONFLICT (block_id, on_date) DO NOTHING RETURNING id`,
+    [academy.id, block.id, date, kind, reason, byId])).rows[0];
+  if (!r) fail(409, `${fmtDay(date)} is already off the bill`);
+  const what = `${block.locationName}, ${block.courtName}, ${fmtDay(date)} ${clock(block.startMinute)}–${clock(block.startMinute + block.minutes)}`;
+  await logAgreement(t, academy.id, block.proId, byId,
+    `${logPrefix}: ${kind === 'waived' ? 'waived' : 'dropped'} ${what}${reason ? ` (${reason})` : ''}.`);
+}
+
+// One pro's court bill for a month: every agreed date, what's off, and owed.
+async function courtStatement(academy, proId, month) {
+  const first = `${month}-01`, last = endOfMonth(month);
+  const blocks = await db.many(
+    `${BLOCK_SELECT} WHERE b.pro_id = $1 AND ${LIVE_BLOCK} AND b.starts_on <= $3::date AND COALESCE(b.ends_on, '${FOREVER}') >= $2::date`,
+    [proId, first, last]);
+  if (!blocks.length) return null;
+  const skips = await db.many(
+    `SELECT s.id, s.block_id AS "blockId", s.on_date::text AS date, s.kind, s.reason
+       FROM court_block_skips s WHERE s.block_id = ANY($1::int[]) AND s.on_date BETWEEN $2::date AND $3::date`,
+    [blocks.map((b) => b.id), first, last]);
+  const dates = [];
+  for (let d = first; d <= last; d = addDays(d, 1)) {
+    for (const b of blocks) {
+      if (b.weekday !== dowOf(d) || d < b.startsOn || (b.endsOn && d > b.endsOn)) continue;
+      const skip = skips.find((s) => s.blockId === b.id && s.date === d) || null;
+      dates.push({ date: d, blockId: b.id, courtName: b.courtName, locationName: b.locationName,
+        startMinute: b.startMinute, minutes: b.minutes, skip });
+    }
+  }
+  dates.sort((a, b) => a.date.localeCompare(b.date) || a.startMinute - b.startMinute);
+  const sum = (f) => dates.filter(f).reduce((a, x) => a + x.minutes, 0) / 60;
+  const billedHours = sum((x) => !x.skip);
+  const paid = await db.one('SELECT * FROM pro_court_months WHERE pro_id = $1 AND month = $2 AND fee_paid_at IS NOT NULL', [proId, month]);
+  const rate = paid ? paid.fee_cents_per_hour : db.settingsOf(academy).private_court_fee_cents_per_hour;
+  const owedCents = paid ? Math.round(Number(paid.hours) * paid.fee_cents_per_hour) : Math.round(billedHours * rate);
   return {
-    month, hours, defaultHours: Number(pro.court_budget_hours), changed: !!(row && row.hours != null),
-    scheduledHours, overBy: Math.max(0, Math.round((scheduledHours - hours) * 100) / 100),
-    feeCentsPerHour: rate, feeCents: Math.round(hours * rate), feePaidAt: row ? row.fee_paid_at : null, requests,
+    month, rateCents: rate, dates, billedHours, waivedHours: sum((x) => x.skip && x.skip.kind === 'waived'),
+    droppedHours: sum((x) => x.skip && x.skip.kind === 'dropped'), owedCents,
+    paidAt: paid ? paid.fee_paid_at : null, paidHours: paid ? Number(paid.hours) : null,
   };
 }
 
-// Court fees budgeted pros still owe for months that have ended.
-async function budgetFeesOwed(academy) {
+// Court fees agreement pros still owe for months that have ended.
+async function agreementFeesOwed(academy) {
   const last = addMonths(monthOf(academy.timezone), -1);
   const pros = await db.many(
-    `SELECT * FROM users WHERE academy_id = $1 AND court_budget_hours IS NOT NULL AND active`, [academy.id]);
+    `SELECT b.pro_id, min(to_char(b.starts_on, 'YYYY-MM')) AS first FROM court_blocks b JOIN users u ON u.id = b.pro_id
+      WHERE b.academy_id = $1 AND ${LIVE_BLOCK} AND u.active GROUP BY b.pro_id`, [academy.id]);
   let total = 0;
   for (const p of pros) {
-    for (let m = p.court_budget_since || last; m <= last; m = addMonths(m, 1)) {
-      const b = await courtBudget(academy, p, m);
-      if (b && !b.feePaidAt) total += b.feeCents;
+    for (let m = p.first; m <= last; m = addMonths(m, 1)) {
+      const s = await courtStatement(academy, p.pro_id, m);
+      if (s && !s.paidAt) total += s.owedCents;
     }
   }
   return total;
 }
 
-// Per-lesson court fees don't apply to a budgeted pro's months.
-const PER_LESSON_FEE = (alias, tzParam) => `NOT EXISTS (SELECT 1 FROM users bu WHERE bu.id = ${alias}.pro_id
-  AND bu.court_budget_hours IS NOT NULL AND to_char(${alias}.starts_at AT TIME ZONE ${tzParam}, 'YYYY-MM') >= COALESCE(bu.court_budget_since, ''))`;
-
-async function upsertCourtMonth(aid, proId, month, sets, by) {
-  // sets: { hours?, fee_cents_per_hour?, fee_paid_at? } — only listed columns change.
-  const cols = Object.keys(sets);
-  await db.query(
-    `INSERT INTO pro_court_months (academy_id, pro_id, month, ${cols.join(', ')}, updated_by)
-     VALUES ($1, $2, $3, ${cols.map((_, i) => `$${i + 5}`).join(', ')}, $4)
-     ON CONFLICT (pro_id, month) DO UPDATE SET ${cols.map((c) => `${c} = EXCLUDED.${c}`).join(', ')},
-       updated_by = EXCLUDED.updated_by, updated_at = now()`,
-    [aid, proId, month, by, ...cols.map((c) => sets[c])]);
-}
+// Per-rental court fees don't apply in a month the pro is on an agreement.
+const PER_LESSON_FEE = (alias, tzParam) => `NOT EXISTS (SELECT 1 FROM court_blocks cb WHERE cb.pro_id = ${alias}.pro_id
+  AND (cb.ends_on IS NULL OR cb.ends_on >= cb.starts_on)
+  AND cb.starts_on <= (date_trunc('month', ${alias}.starts_at AT TIME ZONE ${tzParam}) + interval '1 month - 1 day')::date
+  AND COALESCE(cb.ends_on, '${FOREVER}') >= date_trunc('month', ${alias}.starts_at AT TIME ZONE ${tzParam})::date)`;
 
 async function academyPro(req, id) {
   const pro = await db.one(`SELECT * FROM users WHERE id = $1 AND academy_id = $2 AND role IN ('pro','admin')`, [int(id, 'Pro'), req.aid]);
   if (!pro) fail(404, 'Pro not found');
   return pro;
 }
+async function proBlock(q, req, id, proId = null) {
+  const b = (await q.query(`${BLOCK_SELECT} WHERE b.id = $1 AND b.academy_id = $2 AND ${LIVE_BLOCK}`, [int(id, 'Block'), req.aid])).rows[0];
+  if (!b || (proId && b.proId !== proId)) fail(404, 'Court block not found');
+  return b;
+}
+// The block being added, from a form or request body.
+function blockFromBody(body, proId) {
+  const startsOn = dateOf(body.date, 'Date');
+  return {
+    proId, courtId: int(body.courtId, 'Court'), startMinute: timeOf(body.startTime),
+    minutes: int(body.minutes, 'Length', { min: 30, max: 720 }), startsOn,
+    endsOn: body.repeat === 'once' ? startsOn : (body.endsOn ? dateOf(body.endsOn, 'End date') : null),
+  };
+}
 
-// Management changes one month's hours (blank = back to the usual amount).
-app.put('/api/admin/court-budget', requireAuth, requireAdmin, async (req, res) => {
-  const pro = await academyPro(req, req.body.proId);
-  const month = req.body.month;
-  if (!isMonth(month)) fail(400, 'Month is invalid');
-  if (!hasBudget(pro, month)) fail(400, `${pro.name} isn't on a monthly court-hour budget for that month. Set one under Setup → Edit.`);
-  const hours = req.body.hours === '' || req.body.hours === null ? null : hoursOf(req.body.hours);
-  await upsertCourtMonth(req.aid, pro.id, month, { hours }, req.user.id);
-  res.json({ budget: await courtBudget(req.academy, pro, month) });
+app.get('/api/staff/court-agreement', requireAuth, requireStaff, async (req, res) => {
+  const pro = req.user.role === 'admin' && req.query.proId ? await academyPro(req, req.query.proId) : req.user;
+  const month = isMonth(req.query.month) ? req.query.month : monthOf(req.tz);
+  const today = todayIn(req.tz);
+  const blocks = await db.many(
+    `${BLOCK_SELECT} WHERE b.pro_id = $1 AND ${LIVE_BLOCK} AND COALESCE(b.ends_on, '${FOREVER}') >= $2::date
+      ORDER BY (b.ends_on = b.starts_on), b.weekday, b.start_minute`, [pro.id, `${month}-01` < today ? `${month}-01` : today]);
+  const requests = await db.many(
+    `SELECT r.id, r.kind, r.status, r.reason, r.created_at AS "createdAt", r.decided_at AS "decidedAt", r.summary
+       FROM court_requests r WHERE r.pro_id = $1 AND (r.status = 'pending' OR r.decided_at > now() - interval '45 days')
+      ORDER BY r.id DESC LIMIT 20`, [pro.id]);
+  const log = await db.many(
+    `SELECT g.text, g.created_at AS "createdAt", u.name AS "byName" FROM court_agreement_log g LEFT JOIN users u ON u.id = g.by_user
+      WHERE g.pro_id = $1 ORDER BY g.id DESC LIMIT 60`, [pro.id]);
+  res.json({
+    pro: { id: pro.id, name: pro.name }, month, today,
+    blocks: blocks.map((b) => ({ ...b, label: describeBlock(b) })),
+    statement: await courtStatement(req.academy, pro.id, month), requests, log,
+  });
 });
 
-app.post('/api/admin/court-budget/fee', requireAuth, requireAdmin, async (req, res) => {
+// ── Owner: change an agreement directly ──
+app.post('/api/admin/court-blocks', requireAuth, requireAdmin, async (req, res) => {
   const pro = await academyPro(req, req.body.proId);
-  const month = req.body.month;
-  if (!isMonth(month)) fail(400, 'Month is invalid');
-  const b = await courtBudget(req.academy, pro, month);
-  if (!b) fail(400, 'No court-hour budget that month');
-  // Freeze the hours and rate the fee was paid on.
-  await upsertCourtMonth(req.aid, pro.id, month, req.body.paid === false
-    ? { fee_paid_at: null }
-    : { hours: b.hours, fee_cents_per_hour: b.feeCentsPerHour, fee_paid_at: new Date().toISOString() }, req.user.id);
+  const b = await db.tx((t) => addBlock(t, req.academy, blockFromBody(req.body, pro.id), req.user.id, req.user.name));
+  res.json({ block: b });
+});
+app.post('/api/admin/court-blocks/:id/end', requireAuth, requireAdmin, async (req, res) => {
+  await db.tx(async (t) => {
+    const b = await proBlock(t, req, req.params.id);
+    await endBlock(t, req.academy, b, dateOf(req.body.lastDate, 'Last date'), req.user.id, req.user.name);
+  });
+  res.json({ ok: true });
+});
+app.post('/api/admin/court-blocks/:id/skip', requireAuth, requireAdmin, async (req, res) => {
+  const kind = req.body.kind === 'dropped' ? 'dropped' : 'waived';
+  await db.tx(async (t) => {
+    const b = await proBlock(t, req, req.params.id);
+    await skipDate(t, req.academy, b, dateOf(req.body.date, 'Date'), kind,
+      str(req.body.reason, 'Reason', { optional: kind === 'dropped', max: 200 }), req.user.id, req.user.name);
+  });
+  res.json({ ok: true });
+});
+app.delete('/api/admin/court-skips/:id', requireAuth, requireAdmin, async (req, res) => {
+  await db.tx(async (t) => {
+    const s = (await t.query(
+      `SELECT s.*, s.on_date::text AS d FROM court_block_skips s WHERE s.id = $1 AND s.academy_id = $2`, [int(req.params.id, 'Date'), req.aid])).rows[0];
+    if (!s) fail(404, 'Not found');
+    const b = await proBlock(t, req, s.block_id);
+    await t.query('DELETE FROM court_block_skips WHERE id = $1', [s.id]);
+    await logAgreement(t, req.aid, b.proId, req.user.id,
+      `${req.user.name}: put ${b.locationName}, ${b.courtName}, ${fmtDay(s.d)} back on the bill.`);
+  });
   res.json({ ok: true });
 });
 
-// A pro asks management for more court hours.
-app.post('/api/staff/court-requests', requireAuth, requireStaff, async (req, res) => {
+// The owner records the month's court fee as received; the amount is frozen.
+app.post('/api/admin/court-statement/paid', requireAuth, requireAdmin, async (req, res) => {
+  const pro = await academyPro(req, req.body.proId);
   const month = req.body.month;
-  if (!isMonth(month) || month < monthOf(req.tz)) fail(400, 'Pick this month or a later one');
-  if (!hasBudget(req.user, month)) fail(400, 'You are not on a monthly court-hour budget — ask the owner');
-  const hours = hoursOf(req.body.hours, 'Extra hours');
-  if (hours <= 0) fail(400, 'Ask for at least a half hour');
+  if (!isMonth(month)) fail(400, 'Month is invalid');
+  const s = await courtStatement(req.academy, pro.id, month);
+  if (!s) fail(400, `${pro.name} has no court agreement in ${monthName(month)}`);
+  const paid = req.body.paid !== false;
+  await db.query(
+    `INSERT INTO pro_court_months (academy_id, pro_id, month, hours, fee_cents_per_hour, fee_paid_at, fee_paid_by, updated_by)
+     VALUES ($1,$2,$3,$4,$5, CASE WHEN $6 THEN now() END, $7, $7)
+     ON CONFLICT (pro_id, month) DO UPDATE SET hours = EXCLUDED.hours, fee_cents_per_hour = EXCLUDED.fee_cents_per_hour,
+       fee_paid_at = EXCLUDED.fee_paid_at, fee_paid_by = EXCLUDED.fee_paid_by, updated_by = EXCLUDED.updated_by, updated_at = now()`,
+    [req.aid, pro.id, month, paid ? s.billedHours : null, paid ? s.rateCents : null, paid, req.user.id]);
+  await logAgreement(db, req.aid, pro.id, req.user.id, paid
+    ? `${req.user.name}: received the ${monthName(month)} court fee, ${dollars(s.owedCents)} (${s.billedHours} hrs).`
+    : `${req.user.name}: un-marked the ${monthName(month)} court fee as received.`);
+  res.json({ ok: true });
+});
+
+// ── Pro: ask the owner for a change ──
+// kind: 'add' (a weekly or one-date block), 'end' (stop a weekly block after
+// a date), 'drop' (take one date off). Nothing changes until the owner approves.
+app.post('/api/staff/court-requests', requireAuth, requireStaff, async (req, res) => {
+  const today = todayIn(req.tz);
+  const kind = req.body.kind;
   const reason = str(req.body.reason, 'Reason', { optional: true, max: 300 });
-  await db.query(`INSERT INTO court_hour_requests (academy_id, pro_id, month, hours, reason) VALUES ($1,$2,$3,$4,$5)`,
-    [req.aid, req.user.id, month, hours, reason]);
+  let data, summary;
+  if (kind === 'add') {
+    data = blockFromBody(req.body, req.user.id);
+    if (data.startsOn < today) fail(400, 'Pick today or a later date');
+    const court = await db.one(
+      `SELECT c.name, l.name AS loc FROM courts c JOIN locations l ON l.id = c.location_id WHERE c.id = $1 AND c.academy_id = $2`, [data.courtId, req.aid]);
+    if (!court) fail(400, 'Pick a court');
+    summary = `add ${describeBlock({ ...data, weekday: dowOf(data.startsOn), courtName: court.name, locationName: court.loc })}`;
+  } else if (kind === 'end' || kind === 'drop') {
+    const b = await proBlock(db, req, req.body.blockId, req.user.id);
+    const date = dateOf(req.body.date, 'Date');
+    if (date < today) fail(400, 'Pick today or a later date');
+    data = { blockId: b.id, date };
+    summary = kind === 'end'
+      ? `end ${describeBlock(b)} after ${fmtDay(date)}`
+      : `drop ${b.locationName}, ${b.courtName}, ${fmtDay(date)} ${clock(b.startMinute)}–${clock(b.startMinute + b.minutes)}`;
+  } else fail(400, 'Pick what to change');
+  await db.tx(async (t) => {
+    await t.query(
+      `INSERT INTO court_requests (academy_id, pro_id, kind, data, summary, reason) VALUES ($1,$2,$3,$4,$5,$6)`,
+      [req.aid, req.user.id, kind, JSON.stringify(data), summary, reason]);
+    await logAgreement(t, req.aid, req.user.id, req.user.id, `${req.user.name} asked to ${summary}${reason ? ` ("${reason}")` : ''}.`);
+  });
   const owners = await db.many(`SELECT email FROM users WHERE academy_id = $1 AND role = 'admin' AND active`, [req.aid]);
-  const text = `${req.user.name} is asking for ${hours} more court hour${hours === 1 ? '' : 's'} in ${monthName(month)}`
-    + `${reason ? `: "${reason}"` : '.'}\n\nApprove or decline it in the app under Payroll.`;
+  const text = `${req.user.name} is asking to ${summary}${reason ? ` ("${reason}")` : ''}.\n\nApprove or decline it in the app under Payroll.`;
   for (const o of owners) {
-    email.sendEmail({ to: o.email, subject: `Court hours request from ${req.user.name}`, text, html: `<p>${escapeHtml(text).replace(/\n/g, '<br>')}</p>` })
+    email.sendEmail({ to: o.email, subject: `Court agreement request from ${req.user.name}`, text, html: `<p>${escapeHtml(text).replace(/\n/g, '<br>')}</p>` })
       .catch((err) => console.error('Request email failed:', err));
   }
   res.json({ ok: true });
 });
 
-app.post('/api/admin/court-requests/:id', requireAuth, requireAdmin, async (req, res) => {
-  const r = await db.one(`SELECT * FROM court_hour_requests WHERE id = $1 AND academy_id = $2 AND status = 'pending'`,
-    [int(req.params.id, 'Request'), req.aid]);
+app.post('/api/staff/court-requests/:id/withdraw', requireAuth, requireStaff, async (req, res) => {
+  const r = await db.one(
+    `UPDATE court_requests SET status = 'withdrawn', decided_at = now() WHERE id = $1 AND academy_id = $2 AND pro_id = $3 AND status = 'pending' RETURNING *`,
+    [int(req.params.id, 'Request'), req.aid, req.user.id]);
   if (!r) fail(404, 'Request not found or already answered');
+  await logAgreement(db, req.aid, req.user.id, req.user.id, `${req.user.name} withdrew the request to ${r.summary}.`);
+  res.json({ ok: true });
+});
+
+app.get('/api/admin/court-requests', requireAuth, requireAdmin, async (req, res) => {
+  res.json(await db.many(
+    `SELECT r.id, r.pro_id AS "proId", u.name AS "proName", r.kind, r.summary, r.reason, r.created_at AS "createdAt"
+       FROM court_requests r JOIN users u ON u.id = r.pro_id
+      WHERE r.academy_id = $1 AND r.status = 'pending' ORDER BY r.created_at`, [req.aid]));
+});
+
+// Approving makes the change; from then on the pro is committed to it.
+app.post('/api/admin/court-requests/:id', requireAuth, requireAdmin, async (req, res) => {
   const approve = req.body.approve === true;
-  if (approve) {
-    const pro = await db.one('SELECT * FROM users WHERE id = $1', [r.pro_id]);
-    const b = await courtBudget(req.academy, pro, r.month);
-    if (!b) fail(400, `${pro.name} is no longer on a court-hour budget`);
-    await upsertCourtMonth(req.aid, pro.id, r.month, { hours: b.hours + Number(r.hours) }, req.user.id);
-  }
-  await db.query(`UPDATE court_hour_requests SET status = $2, decided_by = $3, decided_at = now() WHERE id = $1`,
-    [r.id, approve ? 'approved' : 'declined', req.user.id]);
+  await db.tx(async (t) => {
+    const r = (await t.query(
+      `SELECT r.*, u.name AS pro_name FROM court_requests r JOIN users u ON u.id = r.pro_id
+        WHERE r.id = $1 AND r.academy_id = $2 AND r.status = 'pending' FOR UPDATE OF r`, [int(req.params.id, 'Request'), req.aid])).rows[0];
+    if (!r) fail(404, 'Request not found or already answered');
+    const prefix = `${req.user.name} approved ${r.pro_name}'s request`;
+    if (approve) {
+      const d = r.data;
+      if (r.kind === 'add') await addBlock(t, req.academy, d, req.user.id, prefix);
+      else {
+        const b = await proBlock(t, req, d.blockId, r.pro_id);
+        if (r.kind === 'end') await endBlock(t, req.academy, b, d.date, req.user.id, prefix);
+        else await skipDate(t, req.academy, b, d.date, 'dropped', r.reason, req.user.id, prefix);
+      }
+    } else {
+      await logAgreement(t, req.aid, r.pro_id, req.user.id, `${req.user.name} declined ${r.pro_name}'s request to ${r.summary}.`);
+    }
+    await t.query(`UPDATE court_requests SET status = $2, decided_by = $3, decided_at = now() WHERE id = $1`,
+      [r.id, approve ? 'approved' : 'declined', req.user.id]);
+  });
   res.json({ ok: true });
 });
 
@@ -1680,7 +1950,7 @@ app.get('/api/staff/hours', requireAuth, requireStaff, async (req, res) => {
   res.json({
     month, pro: { id: pro.id, name: pro.name, hourlyRateCents: pro.hourly_rate_cents },
     ...m, groupPayCents: Math.round(m.groupHours * pro.hourly_rate_cents), payrollPaid: paid,
-    courtBudget: await courtBudget(req.academy, pro, month),
+    onAgreement: await onAgreement(db, pro.id, month),
   });
 });
 
@@ -1691,16 +1961,16 @@ app.get('/api/admin/payroll', requireAuth, requireAdmin, async (req, res) => {
   const rows = [];
   for (const p of pros) {
     const m = await proMonth(req.aid, req.tz, p.id, month);
-    const idle = !m.sessions.length && !m.private.n && !hasBudget(p, month);
+    const idle = !m.sessions.length && !m.private.n && !(await onAgreement(db, p.id, month));
     if (idle && (!p.active || p.role === 'admin')) continue;
     const pp = paid.find((x) => x.pro_id === p.id);
-    const budget = await courtBudget(req.academy, p, month);
-    if (budget) {
-      m.private.feeCents = budget.feeCents;
-      m.private.feeOwedCents = budget.feePaidAt ? 0 : budget.feeCents;
+    const st = await courtStatement(req.academy, p.id, month);
+    if (st) {
+      m.private.feeCents = st.owedCents;
+      m.private.feeOwedCents = st.paidAt ? 0 : st.owedCents;
     }
     rows.push({
-      courtBudget: budget,
+      agreement: st && { billedHours: st.billedHours, waivedHours: st.waivedHours, owedCents: st.owedCents, paidAt: st.paidAt },
       proId: p.id, name: p.name, hourlyRateCents: p.hourly_rate_cents,
       groupSessions: m.sessions.filter((s) => s.ended).length,
       emptySessions: m.sessions.filter((s) => s.ended && s.booked === 0).length,
@@ -1712,8 +1982,8 @@ app.get('/api/admin/payroll', requireAuth, requireAdmin, async (req, res) => {
     });
   }
   const requests = await db.many(
-    `SELECT r.id, r.pro_id AS "proId", u.name AS "proName", r.month, r.hours::float AS hours, r.reason, r.created_at AS "createdAt"
-       FROM court_hour_requests r JOIN users u ON u.id = r.pro_id
+    `SELECT r.id, r.pro_id AS "proId", u.name AS "proName", r.kind, r.summary, r.reason, r.created_at AS "createdAt"
+       FROM court_requests r JOIN users u ON u.id = r.pro_id
       WHERE r.academy_id = $1 AND r.status = 'pending' ORDER BY r.created_at`, [req.aid]);
   res.json({ month, rows, requests });
 });
@@ -1755,11 +2025,11 @@ app.get('/api/admin/summary', requireAuth, requireAdmin, async (req, res) => {
        (SELECT COALESCE(sum(academy_fee_cents),0)::int FROM private_lessons
          WHERE academy_id = $1 AND status = 'booked' AND NOT fee_paid AND starts_at < now()
            AND ${PER_LESSON_FEE('private_lessons', '$2')}) AS "courtFeesOwedCents",
-       (SELECT count(*)::int FROM court_hour_requests WHERE academy_id = $1 AND status = 'pending') AS "courtRequests",
+       (SELECT count(*)::int FROM court_requests WHERE academy_id = $1 AND status = 'pending') AS "courtRequests",
        (SELECT count(*)::int FROM locations WHERE academy_id = $1) AS "locations",
        (SELECT count(*)::int FROM users WHERE academy_id = $1 AND role = 'pro') AS "pros"`,
     [req.aid, req.tz, month]);
-  row.courtFeesOwedCents += await budgetFeesOwed(req.academy);
+  row.courtFeesOwedCents += await agreementFeesOwed(req.academy);
   res.json({ month, ...row, stripeConnected: !!req.academy.stripe_secret_enc });
 });
 
@@ -1788,7 +2058,6 @@ app.post('/api/admin/users', requireAuth, requireAdmin, async (req, res) => {
     [req.aid, name, email, phoneOf(req.body.phone), role, await bcrypt.hash(tempPassword, 12),
      int(req.body.hourlyRateCents ?? 0, 'Hourly rate', { min: 0, max: 100000 }),
      int(req.body.privateRateCents ?? settings.default_private_rate_cents, 'Private rate', { min: 0, max: 100000 })]);
-  if (req.body.courtBudgetHours !== undefined && req.body.courtBudgetHours !== '') await setCourtBudget(req, u, req.body.courtBudgetHours);
   res.json({ user: publicUser(u), tempPassword });
 });
 
@@ -1814,28 +2083,8 @@ app.put('/api/admin/users/:id', requireAuth, requireAdmin, async (req, res) => {
      int(b.privateRateCents ?? u.private_rate_cents, 'Private rate', { min: 0, max: 100000 }),
      b.zelleHandle !== undefined ? str(b.zelleHandle, 'Zelle', { optional: true, max: 200 }) : u.zelle_handle,
      b.active ?? u.active, req.user.id, newEmail]);
-  if (b.courtBudgetHours !== undefined) await setCourtBudget(req, out, b.courtBudgetHours);
-  res.json({ user: publicUser(await db.one('SELECT * FROM users WHERE id = $1', [u.id])) });
+  res.json({ user: publicUser(out) });
 });
-
-// A pro's usual monthly court hours; blank = court fee per lesson instead.
-// Changing it must not rewrite months already over, so those are frozen first.
-async function setCourtBudget(req, pro, value) {
-  const hours = value === '' || value === null ? null : hoursOf(value, 'Monthly court hours');
-  const was = pro.court_budget_hours == null ? null : Number(pro.court_budget_hours);
-  if (hours === was) return;
-  const cur = monthOf(req.tz);
-  if (was !== null && pro.court_budget_since) {
-    for (let m = pro.court_budget_since; m < cur; m = addMonths(m, 1)) {
-      await db.query(
-        `INSERT INTO pro_court_months (academy_id, pro_id, month, hours, updated_by) VALUES ($1,$2,$3,$4,$5)
-         ON CONFLICT (pro_id, month) DO UPDATE SET hours = COALESCE(pro_court_months.hours, EXCLUDED.hours)`,
-        [req.aid, pro.id, m, was, req.user.id]);
-    }
-  }
-  await db.query('UPDATE users SET court_budget_hours = $2, court_budget_since = $3 WHERE id = $1',
-    [pro.id, hours, hours === null ? null : (was === null ? cur : pro.court_budget_since || cur)]);
-}
 
 // No email is configured yet, so the owner hands the person a temporary password.
 app.post('/api/admin/users/:id/reset-password', requireAuth, requireAdmin, async (req, res) => {
