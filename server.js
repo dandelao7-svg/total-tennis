@@ -34,7 +34,18 @@ const PLATFORM_NAME = process.env.PLATFORM_NAME || 'CourtDesk';
 
 const app = express();
 app.set('trust proxy', 1);
-app.use(helmet());
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      // Every stylesheet and font is our own. Inline style="" attributes are
+      // used throughout the pages, so styles still allow 'unsafe-inline'.
+      'style-src': ["'self'", "'unsafe-inline'"],
+      'font-src': ["'self'", 'data:'],
+    },
+  },
+}));
+// The app never uses the camera, microphone or location.
+app.use((req, res, next) => { res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()'); next(); });
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -2408,6 +2419,15 @@ app.get('/a/:slug/app', page('app.html'));
 app.use(express.static(PUBLIC, { index: false }));
 
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
+// Unknown addresses: a plain "not found" instead of Express's default page,
+// which names the framework.
+app.use((req, res) => {
+  if (req.path.startsWith('/api/')) return res.status(404).json({ error: 'Not found' });
+  res.status(404).type('html').send('<!doctype html><meta charset="utf-8"><title>Not found</title>'
+    + '<link rel="stylesheet" href="/styles.css"><main style="padding:40px;text-align:center">'
+    + '<h1>Page not found</h1><p><a href="/">Go to the home page</a></p></main>');
+});
+
 app.use((err, req, res, next) => {
   if (err instanceof HttpError) return res.status(err.status).json({ error: err.message, code: err.code });
   if (err.type === 'entity.parse.failed') return res.status(400).json({ error: 'Bad request body' });
