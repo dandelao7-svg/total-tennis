@@ -126,6 +126,13 @@ function publicUser(u) {
     smsOptIn: u.sms_opt_in,
   };
 }
+// A user's own record, as sent to them. The rating note is staff-only, so a
+// student never receives theirs.
+const selfUser = (u) => {
+  const out = publicUser(u);
+  if (u.role === 'student') delete out.levelNotes;
+  return out;
+};
 
 // An academy can use the app while trialing, paid up, briefly past due, or comped.
 function academyLive(a) {
@@ -332,7 +339,7 @@ app.post('/api/auth/signup', async (req, res) => {
   const user = await db.one(
     `INSERT INTO users (academy_id, name, email, phone, password_hash, sms_opt_in) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
     [a.id, name, email, phone, await bcrypt.hash(password, 12), req.body.smsOptIn === true && !!phone]);
-  res.json({ token: signToken(user), user: publicUser(user) });
+  res.json({ token: signToken(user), user: selfUser(user) });
 });
 
 app.post('/api/auth/login', async (req, res) => {
@@ -343,7 +350,7 @@ app.post('/api/auth/login', async (req, res) => {
     fail(401, 'Wrong email or password');
   }
   if (!user.active) fail(403, 'This account has been deactivated — contact the academy');
-  res.json({ token: signToken(user), user: publicUser(user) });
+  res.json({ token: signToken(user), user: selfUser(user) });
 });
 
 // ── Forgot / reset password ──────────────────────────────────
@@ -429,7 +436,7 @@ app.post('/api/auth/reset', async (req, res) => {
 app.get('/api/me', requireAuth, async (req, res) => {
   const a = req.academy;
   res.json({
-    user: publicUser(req.user),
+    user: selfUser(req.user),
     credits: await creditSummary(req.aid, req.user.id, req.tz),
     academy: {
       ...publicAcademy(a),
@@ -485,7 +492,7 @@ app.put('/api/me', requireAuth, async (req, res) => {
     `UPDATE users SET name=$2, phone=$3, zelle_handle=$4, password_hash=$5, pwv=$6, email=$7, sms_opt_in=$8 WHERE id=$1 RETURNING *`,
     [u.id, name, phone, zelle, hash, pwv, newEmail, smsOptIn]);
   // A password change signs out other devices; hand this one a fresh token.
-  res.json({ user: publicUser(user), ...(pwv !== u.pwv ? { token: signToken(user) } : {}) });
+  res.json({ user: selfUser(user), ...(pwv !== u.pwv ? { token: signToken(user) } : {}) });
 });
 
 app.get('/api/locations', requireAuth, async (req, res) => {
@@ -1397,7 +1404,9 @@ app.get('/api/staff/students', requireAuth, requireStaff, async (req, res) => {
 });
 
 app.get('/api/staff/students/:id', requireAuth, requireStaff, async (req, res) => {
-  const u = await db.one(`SELECT * FROM users WHERE id = $1 AND academy_id = $2`, [int(req.params.id, 'Student'), req.aid]);
+  // Pros look up students only (not other staff, whose pay rates are private); the owner can open anyone.
+  const u = await db.one(`SELECT * FROM users WHERE id = $1 AND academy_id = $2 AND (role = 'student' OR $3)`,
+    [int(req.params.id, 'Student'), req.aid, req.user.role === 'admin']);
   if (!u) fail(404, 'Student not found');
   const upcoming = await db.many(
     `SELECT b.id AS "bookingId", s.* FROM bookings b JOIN (${SESSION_SELECT} WHERE g.academy_id = $1) s ON s.id = b.session_id
