@@ -803,18 +803,24 @@ VIEWS.setup = async () => {
 
 VIEWS.billing = async () => {
   const sp = new URLSearchParams(location.search);
-  if (sp.get('billing') === 'success') { toast('Thanks — your subscription is active.'); history.replaceState(null, '', `${location.pathname}#billing`); }
+  const justPaid = sp.get('billing') === 'success';
+  if (justPaid) { toast('Thanks, you’re all set.'); history.replaceState(null, '', `${location.pathname}#billing`); }
   const b = await api('GET', '/api/billing/status');
   const labels = { trialing: 'Free trial', active: 'Active', past_due: 'Payment failed', canceled: 'Cancelled', comped: 'Complimentary' };
   $view.innerHTML = html`<h1>Billing</h1>
     <div class="card">
-      <p>Status: <span class="badge ${b.live ? 'ok' : 'danger'}">${labels[b.subStatus] || b.subStatus}</span></p>
-      ${b.subStatus === 'trialing' ? html`<p>Your free trial ${b.live ? 'ends' : 'ended'} on <strong>${TT.fmtDate(b.trialEndsAt)}</strong>.</p>` : ''}
+      ${b.trialDays ? html`<h2>Start your ${b.trialDays}-day free trial</h2>
+        <p>Add a card to open your academy. You won't be charged during the trial; after ${b.trialDays} days the subscription starts${b.priceLabel ? ` at ${b.priceLabel}` : ''}.
+          Cancel any time before then under "Manage payment method" and you pay nothing.</p>
+        <button class="primary" data-act="subscribe">Start free trial</button>`
+      : html`<p>Status: <span class="badge ${b.live ? 'ok' : 'danger'}">${labels[b.subStatus] || b.subStatus}</span></p>
+      ${b.subStatus === 'trialing' && b.trialEndsAt ? html`<p>Your free trial ${b.live ? 'ends' : 'ended'} on <strong>${TT.fmtDate(b.trialEndsAt)}</strong>.</p>` : ''}`}
       ${b.currentPeriodEnd && b.subStatus !== 'trialing' ? html`<p class="muted">Current period ends ${TT.fmtDate(b.currentPeriodEnd)}.</p>` : ''}
-      ${!b.live ? html`<div class="notice warn">Students and pros can't use the app until the subscription is active.</div>` : ''}
+      ${!b.live && justPaid ? html`<div class="notice info">Stripe is confirming your card. Refresh this page in a minute.</div>`
+        : !b.live && !b.trialDays ? html`<div class="notice warn">Students and pros can't use the app until the subscription is active.</div>` : ''}
       ${b.priceLabel ? html`<p class="price">${b.priceLabel}</p>` : ''}
       <div class="row">
-        ${b.subStatus !== 'comped' && (!b.hasSubscription || b.subStatus === 'canceled') ? html`<button class="primary" data-act="subscribe">Subscribe</button>` : ''}
+        ${!b.trialDays && b.subStatus !== 'comped' && (!b.hasSubscription || b.subStatus === 'canceled') ? html`<button class="primary" data-act="subscribe">Subscribe</button>` : ''}
         ${b.hasSubscription ? html`<button data-act="billingPortal">Manage payment method & invoices</button>` : ''}
       </div>
       ${!b.billingEnabled ? html`<p class="hint">Test mode: billing isn't connected, so Subscribe activates instantly.</p>` : ''}

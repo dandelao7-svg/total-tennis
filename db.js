@@ -381,6 +381,25 @@ async function initSchema() {
       updated_at             TIMESTAMPTZ NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS renewals_student_idx ON renewals (academy_id, student_id);
+
+    -- New academies stay closed until the owner confirms their email. Academies
+    -- that existed before this column get the time it was added; new rows get
+    -- NULL (the default is dropped straight after).
+    ALTER TABLE academies ADD COLUMN IF NOT EXISTS owner_verified_at TIMESTAMPTZ DEFAULT now();
+    ALTER TABLE academies ALTER COLUMN owner_verified_at DROP DEFAULT;
+    -- One free trial per owner email: FALSE when that email already had one.
+    ALTER TABLE academies ADD COLUMN IF NOT EXISTS trial_eligible BOOLEAN NOT NULL DEFAULT TRUE;
+
+    -- "Confirm your email" links for new academy owners. Only a SHA-256 is stored.
+    CREATE TABLE IF NOT EXISTS email_verifications (
+      id          SERIAL PRIMARY KEY,
+      academy_id  INT NOT NULL REFERENCES academies(id),
+      user_id     INT NOT NULL REFERENCES users(id),
+      token_hash  TEXT UNIQUE NOT NULL,
+      expires_at  TIMESTAMPTZ NOT NULL,
+      used_at     TIMESTAMPTZ,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
   `);
 }
 
@@ -414,11 +433,13 @@ const DEFAULT_PACKS = [
 ];
 
 // Creates an academy with its owner account and starter lesson packs.
-async function createAcademy(t, { slug, name, timezone, ownerName, ownerEmail, ownerPhone, passwordHash, trialDays, subStatus }) {
+// trialDays null = no trial clock yet (it starts on email confirmation or at
+// Stripe). verified false = closed until the owner confirms their email.
+async function createAcademy(t, { slug, name, timezone, ownerName, ownerEmail, ownerPhone, passwordHash, trialDays, subStatus, verified = true, trialEligible = true }) {
   const academy = (await t.query(
-    `INSERT INTO academies (slug, name, timezone, sub_status, trial_ends_at)
-     VALUES ($1,$2,$3,$4, now() + make_interval(days => $5::int)) RETURNING *`,
-    [slug, name, timezone || 'America/Los_Angeles', subStatus || 'trialing', trialDays])).rows[0];
+    `INSERT INTO academies (slug, name, timezone, sub_status, trial_ends_at, owner_verified_at, trial_eligible)
+     VALUES ($1,$2,$3,$4, now() + make_interval(days => $5::int), CASE WHEN $6 THEN now() END, $7) RETURNING *`,
+    [slug, name, timezone || 'America/Los_Angeles', subStatus || 'trialing', trialDays, verified, trialEligible])).rows[0];
   const owner = (await t.query(
     `INSERT INTO users (academy_id, name, email, phone, password_hash, role) VALUES ($1,$2,$3,$4,$5,'admin') RETURNING *`,
     [academy.id, ownerName, ownerEmail, ownerPhone, passwordHash])).rows[0];

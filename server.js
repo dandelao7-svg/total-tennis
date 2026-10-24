@@ -134,8 +134,10 @@ const selfUser = (u) => {
   return out;
 };
 
-// An academy can use the app while trialing, paid up, briefly past due, or comped.
+// An academy can use the app while trialing, paid up, briefly past due, or comped
+// — and only once its owner has confirmed their email.
 function academyLive(a) {
+  if (!a.owner_verified_at) return false;
   if (['active', 'past_due', 'comped'].includes(a.sub_status)) return true;
   return a.sub_status === 'trialing' && a.trial_ends_at && new Date(a.trial_ends_at) > new Date();
 }
@@ -258,8 +260,9 @@ app.post('/api/platform/webhook', express.raw({ type: 'application/json' }), asy
   }
   const o = event.data.object;
   if (event.type === 'checkout.session.completed' && o.mode === 'subscription' && o.metadata?.academy_id) {
+    // Its free trial (if any) is now used, so a later re-subscribe pays at once.
     await db.query(
-      `UPDATE academies SET platform_customer_id = $2, platform_subscription_id = $3,
+      `UPDATE academies SET platform_customer_id = $2, platform_subscription_id = $3, trial_eligible = FALSE,
               sub_status = CASE WHEN sub_status = 'comped' THEN sub_status ELSE 'active' END
         WHERE id = $1`, [Number(o.metadata.academy_id), o.customer, o.subscription]);
   } else if (event.type.startsWith('customer.subscription.')) {
@@ -290,6 +293,45 @@ app.get('/health', (req, res) => res.json({ ok: true }));
 
 // ── Academy sign-up (a new paying customer) ──────────────────
 
+// Card-first trials: once platform billing is set up, the free trial starts at
+// Stripe with a card on file. Until then it starts when the email is confirmed.
+const billingOn = () => !!(platformStripe && process.env.PLATFORM_STRIPE_PRICE_ID);
+
+// The same inbox written different ways counts once: case, a "+tag", and for
+// Gmail the dots too (d.an@gmail.com = dan@gmail.com = dan+2@googlemail.com).
+function inboxOf(email) {
+  let [local, domain] = String(email).toLowerCase().split('@');
+  local = local.split('+')[0];
+  if (domain === 'googlemail.com') domain = 'gmail.com';
+  if (domain === 'gmail.com') local = local.replace(/\./g, '');
+  return `${local}@${domain}`;
+}
+// Has this inbox already created an academy (and so had its free trial)?
+async function hadTrial(email) {
+  const owners = await db.many(
+    `SELECT DISTINCT ON (academy_id) email FROM users WHERE role = 'admin' ORDER BY academy_id, id`);
+  const inbox = inboxOf(email);
+  return owners.some((o) => inboxOf(o.email) === inbox);
+}
+
+const VERIFY_HOURS = 48;
+async function sendVerification(req, academy, owner) {
+  const token = crypto.randomBytes(32).toString('base64url');
+  await db.query(
+    `INSERT INTO email_verifications (academy_id, user_id, token_hash, expires_at)
+     VALUES ($1, $2, $3, now() + make_interval(hours => $4::int))`, [academy.id, owner.id, sha256(token), VERIFY_HOURS]);
+  const link = `${originOf(req)}/start/verify#token=${token}`;
+  await email.sendEmail({
+    to: owner.email,
+    subject: `Confirm your email to open ${academy.name}`,
+    text: `Hi ${owner.name},\n\nConfirm your email to open ${academy.name}'s booking app:\n${link}\n\n`
+      + `The link works for ${VERIFY_HOURS} hours. If you didn't sign up, ignore this email.`,
+    html: `<p>Hi ${escapeHtml(owner.name)},</p><p>Confirm your email to open ${escapeHtml(academy.name)}'s booking app.</p>`
+      + `<p><a href="${link}" style="display:inline-block;padding:10px 18px;background:#1f6b3a;color:#fff;border-radius:8px;text-decoration:none">Confirm my email</a></p>`
+      + `<p style="color:#5d6b61;font-size:14px">The link works for ${VERIFY_HOURS} hours. If you didn't sign up, ignore this email.</p>`,
+  }).catch((err) => console.error('Verification email failed:', err));
+}
+
 app.post('/api/auth/academy-signup', async (req, res) => {
   const name = str(req.body.academyName, 'Academy name', { max: 100 });
   const slug = str(req.body.slug, 'Web address', { max: 40 }).toLowerCase();
@@ -299,16 +341,61 @@ app.post('/api/auth/academy-signup', async (req, res) => {
   const timezone = req.body.timezone && validTimezone(req.body.timezone) ? req.body.timezone : 'America/Los_Angeles';
   const password = String(req.body.password || '');
   if (password.length < 8) fail(400, 'Password must be at least 8 characters');
+  const ownerEmail = emailOf(req.body.email);
+  // One free trial per inbox. With billing on, a repeat owner can still open
+  // another academy — it just starts paid. Without billing there's no way to pay.
+  const trialEligible = !(await hadTrial(ownerEmail));
+  if (!trialEligible && !billingOn()) {
+    fail(409, 'This email has already had a free trial. Log in to your academy at /login, or contact us to add another academy.');
+  }
+  // Without an email service (local development) there's no link to click.
+  const verifyByEmail = email.isConfigured();
   const passwordHash = await bcrypt.hash(password, 12);
-  const { owner } = await db.tx((t) => db.createAcademy(t, {
+  const { academy, owner } = await db.tx((t) => db.createAcademy(t, {
     slug, name, timezone,
     ownerName: str(req.body.name, 'Your name', { max: 100 }),
-    ownerEmail: emailOf(req.body.email),
+    ownerEmail,
     ownerPhone: phoneOf(req.body.phone),
     passwordHash,
-    trialDays: TRIAL_DAYS,
+    trialDays: !verifyByEmail && !billingOn() ? TRIAL_DAYS : null,
+    verified: !verifyByEmail,
+    trialEligible,
   }));
-  res.json({ token: signToken(owner), slug });
+  if (!verifyByEmail) return res.json({ token: signToken(owner), slug });
+  await sendVerification(req, academy, owner);
+  res.json({ checkEmail: true, email: owner.email, slug });
+});
+
+// The link in the confirmation email. Opens the academy, starts the free trial
+// clock (unless the trial will start at Stripe), and logs the owner in.
+app.post('/api/auth/verify-email', async (req, res) => {
+  const out = await db.tx(async (t) => {
+    const v = (await t.query(
+      `UPDATE email_verifications SET used_at = now()
+        WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now() RETURNING academy_id, user_id`,
+      [sha256(String(req.body.token || ''))])).rows[0];
+    if (!v) fail(400, 'This link has expired or was already used. Try logging in, or sign up again.');
+    const a = (await t.query(
+      `UPDATE academies SET owner_verified_at = COALESCE(owner_verified_at, now()),
+              trial_ends_at = CASE WHEN owner_verified_at IS NULL AND trial_eligible AND NOT $2
+                                   THEN now() + make_interval(days => $3::int) ELSE trial_ends_at END
+        WHERE id = $1 RETURNING *`, [v.academy_id, billingOn(), TRIAL_DAYS])).rows[0];
+    const u = (await t.query('SELECT * FROM users WHERE id = $1 AND active', [v.user_id])).rows[0];
+    if (!u) fail(403, 'This account has been deactivated');
+    return { token: signToken(u), slug: a.slug };
+  });
+  res.json(out);
+});
+
+// "Didn't get the email?" Same answer whether or not anything matched.
+app.post('/api/auth/resend-verification', async (req, res) => {
+  const row = await db.one(
+    `SELECT row_to_json(a) AS a, row_to_json(u) AS u FROM academies a
+       JOIN users u ON u.academy_id = a.id AND u.role = 'admin'
+      WHERE a.slug = $1 AND u.email = $2 AND a.owner_verified_at IS NULL ORDER BY u.id LIMIT 1`,
+    [String(req.body.slug || '').toLowerCase(), String(req.body.email || '').trim().toLowerCase()]);
+  if (row) await sendVerification(req, row.a, row.u);
+  res.json({ ok: true });
 });
 
 app.get('/api/academy/:slug', async (req, res) => {
@@ -350,6 +437,9 @@ app.post('/api/auth/login', async (req, res) => {
     fail(401, 'Wrong email or password');
   }
   if (!user.active) fail(403, 'This account has been deactivated — contact the academy');
+  if (!a.owner_verified_at) {
+    fail(403, `Confirm your email first: open the link we sent to ${user.email} when you signed up (check spam too).`, 'EMAIL_UNCONFIRMED');
+  }
   res.json({ token: signToken(user), user: selfUser(user) });
 });
 
@@ -2343,10 +2433,17 @@ app.get('/api/billing/status', requireAuth, requireAdmin, async (req, res) => {
   const a = req.academy;
   res.json({
     subStatus: a.sub_status, live: req.live, trialEndsAt: a.trial_ends_at, currentPeriodEnd: a.current_period_end,
-    hasSubscription: !!a.platform_subscription_id, billingEnabled: !!platformStripe,
+    hasSubscription: !!a.platform_subscription_id, billingEnabled: billingOn(),
     priceLabel: process.env.PLATFORM_PRICE_LABEL || '',
+    // A card-first free trial is still on offer for this academy.
+    trialDays: trialAtStripe(a) ? TRIAL_DAYS : 0,
   });
 });
+
+// The free trial starts at Stripe (card required) for an academy that hasn't
+// had one: its owner's email is new, and it never had a subscription or a
+// card-free trial.
+const trialAtStripe = (a) => billingOn() && a.trial_eligible && !a.platform_subscription_id && !a.trial_ends_at;
 
 app.post('/api/billing/checkout', requireAuth, requireAdmin, async (req, res) => {
   const a = req.academy;
@@ -2363,7 +2460,12 @@ app.post('/api/billing/checkout', requireAuth, requireAdmin, async (req, res) =>
     ...(a.platform_customer_id ? { customer: a.platform_customer_id } : { customer_email: req.user.email }),
     client_reference_id: String(a.id),
     metadata: { academy_id: String(a.id) },
-    subscription_data: { metadata: { academy_id: String(a.id), academy_slug: a.slug } },
+    // Card required even for the trial; Stripe charges on the day it ends.
+    payment_method_collection: 'always',
+    subscription_data: {
+      metadata: { academy_id: String(a.id), academy_slug: a.slug },
+      ...(trialAtStripe(a) ? { trial_period_days: TRIAL_DAYS } : {}),
+    },
     success_url: `${back}?billing=success#billing`,
     cancel_url: `${back}#billing`,
   });
@@ -2395,6 +2497,7 @@ app.get('/api/platform/academies', requirePlatform, async (req, res) => {
     `SELECT a.id, a.slug, a.name, a.sub_status AS "subStatus", a.trial_ends_at AS "trialEndsAt",
             a.current_period_end AS "currentPeriodEnd", a.created_at AS "createdAt",
             (a.stripe_secret_enc IS NOT NULL) AS "stripeConnected",
+            (a.owner_verified_at IS NOT NULL) AS verified, a.trial_eligible AS "trialEligible",
             (SELECT email FROM users u WHERE u.academy_id = a.id AND u.role = 'admin' ORDER BY id LIMIT 1) AS "ownerEmail",
             (SELECT count(*)::int FROM users u WHERE u.academy_id = a.id AND u.role = 'student') AS students,
             (SELECT count(*)::int FROM group_sessions g WHERE g.academy_id = a.id AND g.starts_at > now() - interval '30 days') AS "sessions30d",
@@ -2404,6 +2507,16 @@ app.get('/api/platform/academies', requirePlatform, async (req, res) => {
 });
 
 app.put('/api/platform/academies/:id', requirePlatform, async (req, res) => {
+  // You opening an academy yourself (a customer you set up, a demo, a tester):
+  // confirmed, with a card-free trial starting now.
+  if (req.body.startTrial) {
+    const r = await db.one(
+      `UPDATE academies SET owner_verified_at = COALESCE(owner_verified_at, now()), sub_status = 'trialing',
+              trial_ends_at = now() + make_interval(days => $2::int)
+        WHERE id = $1 RETURNING id`, [int(req.params.id, 'Academy'), TRIAL_DAYS]);
+    if (!r) fail(404, 'Academy not found');
+    return res.json({ ok: true });
+  }
   const status = req.body.subStatus;
   if (status && !['trialing', 'active', 'past_due', 'canceled', 'comped'].includes(status)) fail(400, 'Bad status');
   const trialEnds = req.body.trialEndsAt ? timestamp(req.body.trialEndsAt, 'Trial end') : null;
@@ -2420,6 +2533,7 @@ const PUBLIC = path.join(__dirname, 'public');
 const page = (file) => (req, res) => res.sendFile(path.join(PUBLIC, file));
 app.get('/', page('index.html'));
 app.get('/start', page('start.html'));
+app.get('/start/verify', page('start.html'));
 app.get('/login', page('login.html'));
 app.get('/platform', page('platform.html'));
 app.get('/a/:slug', page('academy.html'));

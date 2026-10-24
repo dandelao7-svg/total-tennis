@@ -22,7 +22,12 @@
         <td><a href="/a/${r.slug}" target="_blank" rel="noopener">${r.name}</a><div class="small muted">/a/${r.slug}</div></td>
         <td class="small">${r.ownerEmail || ''}</td>
         <td><select data-id="${r.id}" style="min-width:120px">${STATUSES.map((s) => html`<option ${raw(s === r.subStatus ? 'selected' : '')}>${s}</option>`)}</select>
-          ${r.subStatus === 'trialing' ? html`<div class="small muted">ends ${TT.fmtDate(r.trialEndsAt)}</div>` : ''}</td>
+          ${!r.verified ? html`<div class="small muted">Email not confirmed yet</div>`
+            : r.subStatus === 'trialing' && r.trialEndsAt ? html`<div class="small muted">ends ${TT.fmtDate(r.trialEndsAt)}</div>`
+            : r.subStatus === 'trialing' ? html`<div class="small muted">Waiting for card</div>` : ''}
+          ${!r.verified || (r.subStatus === 'trialing' && !r.trialEndsAt) || r.subStatus === 'canceled'
+            ? html`<div><button class="link small" data-trial="${r.id}" data-name="${r.name}">Start 14-day trial (no card)</button></div>` : ''}
+          ${!r.trialEligible ? html`<div class="small muted">Email already had a trial</div>` : ''}</td>
         <td class="num">${r.students}</td><td class="num">${r.sessions30d}</td><td class="num">${money(r.gmv30dCents)}</td>
         <td>${r.stripeConnected ? 'Yes' : '—'}</td><td class="small">${TT.fmtDate(r.createdAt)}</td></tr>`)}`.s;
   }
@@ -40,6 +45,13 @@
     } catch (err) { $('err').textContent = err.message; $('err').classList.remove('hidden'); }
   });
   $('logout').addEventListener('click', () => { try { sessionStorage.removeItem(KEY); } catch { /* ignore */ } showLogin(); });
+  $('table').addEventListener('click', async (e) => {
+    const b = e.target.closest('button[data-trial]');
+    if (!b) return;
+    if (!window.confirm(`Open "${b.dataset.name}" with a free trial, no card needed?`)) return;
+    try { await call('PUT', `/api/platform/academies/${b.dataset.trial}`, { startTrial: true }); TT.toast('Trial started'); load(); }
+    catch (err) { TT.toast(err.message, true); }
+  });
   $('table').addEventListener('change', async (e) => {
     const sel = e.target.closest('select[data-id]');
     if (!sel) return;

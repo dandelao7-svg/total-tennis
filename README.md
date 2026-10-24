@@ -53,6 +53,8 @@ With no Stripe keys and `NODE_ENV` not `production`, purchases and subscriptions
    - Settings → Billing → Customer portal → turn it on (lets academies update their card or cancel).
 5. Visit `/start` to create the first academy, then `/platform` to check it's there.
 
+**New academies:** the owner must confirm their email before the academy opens, and each inbox gets one free trial (Gmail dots and +tags count as the same inbox). Once your platform billing (step 4) is set up, the trial starts at Stripe with a card on file and is charged on day 15; until then it starts on email confirmation. You can open any academy yourself from `/platform` → "Start 14-day trial (no card)" (customers you set up, demos, testers).
+
 ## Each academy's own card payments
 
 In the app: **Setup → Card payments**. The owner pastes their Stripe secret key, and optionally a webhook signing secret for `<APP_URL>/api/stripe/webhook/<academy id>`. The page shows the exact URL. Keys are encrypted at rest. Even without the webhook, credits are issued when the student returns from Stripe Checkout.
