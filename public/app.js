@@ -375,7 +375,8 @@ VIEWS.account = async () => {
       </div>
       <button type="submit" style="margin-top:12px">Change password</button>
     </form>
-    <button data-act="logout">Log out</button>`.s;
+    <div class="row"><button data-act="logout">Log out</button>
+      <button data-act="logoutEverywhere">Log out of all other devices</button></div>`.s;
 };
 
 // ── Staff views ──────────────────────────────────────────────
@@ -1156,7 +1157,17 @@ const acts = {
         <td>${b.bookingStatus === 'cancelled' ? 'Cancelled' : b.attended === true ? 'Attended' : b.attended === false ? 'Missed' : ''}</td></tr>`)}
     </table></div>`.s : '<p class="muted">No past lessons yet.</p>';
   },
-  logout() { TT.token.clear(); location.replace(`/a/${TT.slug}`); },
+  async logout() {
+    // Cancel the login on the server too, then forget it here.
+    try { await api('POST', '/api/auth/logout'); } catch { /* still log out locally */ }
+    TT.token.clear(); location.replace(`/a/${TT.slug}`);
+  },
+  async logoutEverywhere() {
+    if (!(await confirmBox('Log out of all other devices?', 'Any phone or computer where you are logged in, other than this one, will need to log in again.', 'Log them out', false))) return;
+    const r = await api('PUT', '/api/me', { name: S.me.name, phone: S.me.phone, zelleHandle: S.me.zelleHandle, logoutEverywhere: true });
+    if (r.token) TT.token.set(r.token);
+    toast('All other devices have been logged out.');
+  },
   copyField(el) {
     const f = el.closest('.modal').querySelector(`[data-copy="${el.dataset.target}"]`);
     navigator.clipboard?.writeText(f.value).then(() => toast('Copied'), () => { f.select(); toast('Press Ctrl+C to copy', true); });

@@ -168,7 +168,12 @@ function academyStripe(a) {
 
 // ── Auth ─────────────────────────────────────────────────────
 
-const signToken = (user) => jwt.sign({ uid: user.id, pwv: user.pwv || 0 }, JWT_SECRET, { expiresIn: '30d' });
+// Each login gets its own id (jti) so logging out can cancel it on the server.
+// Students stay logged in on their phones for 30 days; owners and pros, whose
+// accounts can see far more, for 7.
+const signToken = (user) => jwt.sign(
+  { uid: user.id, pwv: user.pwv || 0, jti: crypto.randomBytes(16).toString('base64url') },
+  JWT_SECRET, { expiresIn: user.role === 'student' ? '30d' : '7d' });
 
 // While an academy's subscription is lapsed, only the owner can get in, and
 // only far enough to see their account and pay.
@@ -180,12 +185,15 @@ async function requireAuth(req, res, next) {
   if (!token) return res.status(401).json({ error: 'Please log in' });
   let payload;
   try { payload = jwt.verify(token, JWT_SECRET); } catch { return res.status(401).json({ error: 'Session expired — please log in again' }); }
-  if (!payload.uid) return res.status(401).json({ error: 'Please log in' });
+  // Logins from before logout could be cancelled have no jti: ask for a fresh one.
+  if (!payload.uid || !payload.jti) return res.status(401).json({ error: 'Please log in' });
   // Load fresh every request so role/level/deactivation changes apply immediately.
   const row = await db.one(
-    `SELECT row_to_json(u) AS u, row_to_json(a) AS a
-       FROM users u JOIN academies a ON a.id = u.academy_id WHERE u.id = $1`, [payload.uid]);
+    `SELECT row_to_json(u) AS u, row_to_json(a) AS a,
+            EXISTS (SELECT 1 FROM revoked_tokens r WHERE r.jti = $2) AS revoked
+       FROM users u JOIN academies a ON a.id = u.academy_id WHERE u.id = $1`, [payload.uid, payload.jti]);
   if (!row || !row.u.active) return res.status(401).json({ error: 'Account not active' });
+  if (row.revoked) return res.status(401).json({ error: 'You logged out — please log in again' });
   // Password changed since this token was issued → log out.
   if ((payload.pwv || 0) !== row.u.pwv) return res.status(401).json({ error: 'Your password was changed — please log in again' });
   req.user = row.u;
@@ -387,6 +395,20 @@ app.post('/api/auth/verify-email', async (req, res) => {
   res.json(out);
 });
 
+// Logging out cancels this login on the server too, so a copied token stops
+// working. Kept until the token would have expired anyway.
+app.post('/api/auth/logout', async (req, res) => {
+  const h = req.headers.authorization || '';
+  let p = null;
+  try { p = jwt.verify(h.slice(7), JWT_SECRET); } catch { /* already invalid */ }
+  if (p && p.jti && p.exp) {
+    await db.query(
+      `INSERT INTO revoked_tokens (jti, expires_at) VALUES ($1, to_timestamp($2)) ON CONFLICT (jti) DO NOTHING`, [p.jti, p.exp]);
+    await db.query('DELETE FROM revoked_tokens WHERE expires_at < now()');
+  }
+  res.json({ ok: true });
+});
+
 // "Didn't get the email?" Same answer whether or not anything matched.
 app.post('/api/auth/resend-verification', async (req, res) => {
   const row = await db.one(
@@ -577,6 +599,8 @@ app.put('/api/me', requireAuth, async (req, res) => {
     hash = await bcrypt.hash(String(req.body.newPassword), 12);
     pwv += 1;
   }
+  // "Log out of all other devices": every older login stops working.
+  if (req.body.logoutEverywhere === true) pwv = Math.max(pwv, u.pwv + 1);
   const smsOptIn = (req.body.smsOptIn !== undefined ? req.body.smsOptIn === true : u.sms_opt_in) && !!phone;
   const user = await db.one(
     `UPDATE users SET name=$2, phone=$3, zelle_handle=$4, password_hash=$5, pwv=$6, email=$7, sms_opt_in=$8 WHERE id=$1 RETURNING *`,
