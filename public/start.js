@@ -38,7 +38,9 @@
     $('submit').disabled = true;
     $('err').classList.add('hidden');
     try {
-      const out = await TT.api('POST', '/api/auth/academy-signup', TT.formValues(e.target), { auth: false });
+      const v = TT.formValues(e.target);
+      if (!v.acceptTerms) throw new Error('Please read and accept the Terms of Service to continue');
+      const out = await TT.api('POST', '/api/auth/academy-signup', v, { auth: false });
       if (out.token) return openApp(out.slug, out.token);
       pending = { slug: out.slug, email: out.email };
       $('checkEmail').textContent = out.email;

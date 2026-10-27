@@ -86,7 +86,7 @@ const STUDENTS = [
   // Academy + owner
   const signup = await api(null, 'POST', '/api/auth/academy-signup', {
     academyName: NAME, slug: SLUG, name: 'Mike Gennette', phone: '(805) 495-0111',
-    email: `owner@${DOMAIN}`, password: PASSWORD, timezone: TZ,
+    email: `owner@${DOMAIN}`, password: PASSWORD, timezone: TZ, acceptTerms: true,
   });
   let owner = signup.token;
   if (!owner) {

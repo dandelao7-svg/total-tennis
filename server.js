@@ -31,6 +31,8 @@ if (!encryptionConfigured()) console.warn('ENCRYPTION_KEY not set — academies 
 const platformStripe = process.env.PLATFORM_STRIPE_SECRET_KEY ? Stripe(process.env.PLATFORM_STRIPE_SECRET_KEY) : null;
 const TRIAL_DAYS = Number(process.env.TRIAL_DAYS || 30);
 const PLATFORM_NAME = process.env.PLATFORM_NAME || 'CourtDesk';
+// The academy Terms of Service at /terms. Bump the version whenever its wording changes.
+const TERMS_VERSION = '2026-10-26';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -349,6 +351,7 @@ app.post('/api/auth/academy-signup', async (req, res) => {
   const timezone = req.body.timezone && validTimezone(req.body.timezone) ? req.body.timezone : 'America/Los_Angeles';
   const password = String(req.body.password || '');
   if (password.length < 8) fail(400, 'Password must be at least 8 characters');
+  if (req.body.acceptTerms !== true) fail(400, 'Please read and accept the Terms of Service to continue');
   const ownerEmail = emailOf(req.body.email);
   // One free trial per inbox. With billing on, a repeat owner can still open
   // another academy — it just starts paid. Without billing there's no way to pay.
@@ -369,6 +372,8 @@ app.post('/api/auth/academy-signup', async (req, res) => {
     verified: !verifyByEmail,
     trialEligible,
   }));
+  await db.query('UPDATE academies SET terms_accepted_at = now(), terms_version = $2, terms_accepted_ip = $3 WHERE id = $1',
+    [academy.id, TERMS_VERSION, req.ip]);
   if (!verifyByEmail) return res.json({ token: signToken(owner), slug });
   await sendVerification(req, academy, owner);
   res.json({ checkEmail: true, email: owner.email, slug });
@@ -419,6 +424,12 @@ app.post('/api/auth/resend-verification', async (req, res) => {
   if (row) await sendVerification(req, row.a, row.u);
   res.json({ ok: true });
 });
+
+// Public facts for the Terms of Service page.
+app.get('/api/site', (req, res) => res.json({
+  legalName: process.env.PLATFORM_LEGAL_NAME || 'NextLao', supportEmail: process.env.SUPPORT_EMAIL || null,
+  termsVersion: TERMS_VERSION, trialDays: TRIAL_DAYS,
+}));
 
 app.get('/api/academy/:slug', async (req, res) => {
   const a = await db.one('SELECT * FROM academies WHERE slug = $1', [String(req.params.slug).toLowerCase()]);
@@ -2524,6 +2535,7 @@ app.get('/api/platform/academies', requirePlatform, async (req, res) => {
             a.current_period_end AS "currentPeriodEnd", a.created_at AS "createdAt",
             (a.stripe_secret_enc IS NOT NULL) AS "stripeConnected",
             (a.owner_verified_at IS NOT NULL) AS verified, a.trial_eligible AS "trialEligible",
+            a.terms_accepted_at AS "termsAcceptedAt", a.terms_version AS "termsVersion",
             (SELECT email FROM users u WHERE u.academy_id = a.id AND u.role = 'admin' ORDER BY id LIMIT 1) AS "ownerEmail",
             (SELECT count(*)::int FROM users u WHERE u.academy_id = a.id AND u.role = 'student') AS students,
             (SELECT count(*)::int FROM group_sessions g WHERE g.academy_id = a.id AND g.starts_at > now() - interval '30 days') AS "sessions30d",
@@ -2560,6 +2572,7 @@ const page = (file) => (req, res) => res.sendFile(path.join(PUBLIC, file));
 app.get('/', page('index.html'));
 app.get('/start', page('start.html'));
 app.get('/start/verify', page('start.html'));
+app.get('/terms', page('terms.html'));
 app.get('/login', page('login.html'));
 app.get('/platform', page('platform.html'));
 app.get('/a/:slug', page('academy.html'));

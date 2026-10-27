@@ -390,6 +390,11 @@ async function initSchema() {
     -- One free trial per owner email: FALSE when that email already had one.
     ALTER TABLE academies ADD COLUMN IF NOT EXISTS trial_eligible BOOLEAN NOT NULL DEFAULT TRUE;
 
+    -- When the owner accepted the academy Terms of Service at sign-up, and which version.
+    ALTER TABLE academies ADD COLUMN IF NOT EXISTS terms_accepted_at TIMESTAMPTZ;
+    ALTER TABLE academies ADD COLUMN IF NOT EXISTS terms_version TEXT;
+    ALTER TABLE academies ADD COLUMN IF NOT EXISTS terms_accepted_ip TEXT;
+
     -- Logins cancelled by logging out, kept until they would have expired.
     CREATE TABLE IF NOT EXISTS revoked_tokens (
       jti         TEXT PRIMARY KEY,
