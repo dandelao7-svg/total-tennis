@@ -26,7 +26,7 @@
             : r.subStatus === 'trialing' && r.trialEndsAt ? html`<div class="small muted">ends ${TT.fmtDate(r.trialEndsAt)}</div>`
             : r.subStatus === 'trialing' ? html`<div class="small muted">Waiting for card</div>` : ''}
           ${!r.verified || (r.subStatus === 'trialing' && !r.trialEndsAt) || r.subStatus === 'canceled'
-            ? html`<div><button class="link small" data-trial="${r.id}" data-name="${r.name}">Start 14-day trial (no card)</button></div>` : ''}
+            ? html`<div><button class="link small" data-trial="${r.id}" data-name="${r.name}">Start free trial (no card)</button></div>` : ''}
           ${!r.trialEligible ? html`<div class="small muted">Email already had a trial</div>` : ''}</td>
         <td class="num">${r.students}</td><td class="num">${r.sessions30d}</td><td class="num">${money(r.gmv30dCents)}</td>
         <td>${r.stripeConnected ? 'Yes' : '—'}</td><td class="small">${TT.fmtDate(r.createdAt)}</td></tr>`)}`.s;

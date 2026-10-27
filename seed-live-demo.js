@@ -92,7 +92,7 @@ const STUDENTS = [
   if (!owner) {
     // The live site asks new owners to confirm their email; these demo
     // addresses can't receive mail, so you open the academy from /platform.
-    console.log(`\nAcademy created. Now open ${BASE}/platform, find "${NAME}" and click "Start 14-day trial (no card)".`);
+    console.log(`\nAcademy created. Now open ${BASE}/platform, find "${NAME}" and click "Start free trial (no card)".`);
     const rl = require('readline').createInterface({ input: process.stdin, output: process.stdout });
     await new Promise((r) => rl.question('Press Enter once you have done that… ', () => { rl.close(); r(); }));
     owner = (await api(null, 'POST', '/api/auth/login', { academy: SLUG, email: `owner@${DOMAIN}`, password: PASSWORD })).token;

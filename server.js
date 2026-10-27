@@ -29,7 +29,7 @@ if (!encryptionConfigured()) console.warn('ENCRYPTION_KEY not set — academies 
 
 // Platform Stripe account: academies pay us a monthly subscription.
 const platformStripe = process.env.PLATFORM_STRIPE_SECRET_KEY ? Stripe(process.env.PLATFORM_STRIPE_SECRET_KEY) : null;
-const TRIAL_DAYS = Number(process.env.TRIAL_DAYS || 14);
+const TRIAL_DAYS = Number(process.env.TRIAL_DAYS || 30);
 const PLATFORM_NAME = process.env.PLATFORM_NAME || 'CourtDesk';
 
 const app = express();
