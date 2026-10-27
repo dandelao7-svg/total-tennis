@@ -813,6 +813,7 @@ VIEWS.billing = async () => {
       ${b.trialDays ? html`<h2>Start your ${b.trialDays}-day free trial</h2>
         <p>Add a card to open your academy. You won't be charged during the trial; after ${b.trialDays} days the subscription starts${b.priceLabel ? ` at ${b.priceLabel}` : ''}.
           Cancel any time before then under "Manage payment method" and you pay nothing.</p>
+        <p class="small muted">Have a promotion code? You can enter it on the Stripe payment page.</p>
         <button class="primary" data-act="subscribe">Start free trial</button>`
       : html`<p>Status: <span class="badge ${b.live ? 'ok' : 'danger'}">${labels[b.subStatus] || b.subStatus}</span></p>
       ${b.subStatus === 'trialing' && b.trialEndsAt ? html`<p>Your free trial ${b.live ? 'ends' : 'ended'} on <strong>${TT.fmtDate(b.trialEndsAt)}</strong>.</p>` : ''}`}

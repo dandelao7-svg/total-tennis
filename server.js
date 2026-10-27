@@ -2486,6 +2486,8 @@ app.post('/api/billing/checkout', requireAuth, requireAdmin, async (req, res) =>
     metadata: { academy_id: String(a.id) },
     // Card required even for the trial; Stripe charges on the day it ends.
     payment_method_collection: 'always',
+    // A box for codes such as FOUNDING ($99/mo for 12 months) or an academy's own code.
+    allow_promotion_codes: true,
     subscription_data: {
       metadata: { academy_id: String(a.id), academy_slug: a.slug },
       ...(trialAtStripe(a) ? { trial_period_days: TRIAL_DAYS } : {}),
