@@ -43,6 +43,7 @@ async function boot() {
   TT.rememberAcademy(S.academy);
   document.title = S.academy.name;
   document.getElementById('acName').textContent = S.academy.name;
+  TT.showLogo(S.academy.logoUrl, S.academy.name);
   document.getElementById('who').textContent = S.me.name;
   window.addEventListener('hashchange', render);
   render();
@@ -719,6 +720,16 @@ VIEWS.setup = async () => {
   const st = settings.settings;
   $view.innerHTML = html`<h1>Setup</h1>
     <section class="card">
+      <h2>Your logo</h2>
+      <p class="muted small">Shown at the top of your app and on your students' log-in page. PNG, JPG or WebP; a square or wide logo works best.</p>
+      <div class="row" style="align-items:center;gap:16px">
+        ${S.academy.logoUrl ? html`<img class="logo-preview" src="${S.academy.logoUrl}" alt="Current logo">` : html`<span class="muted small">No logo yet.</span>`}
+        <label class="btn sm" style="cursor:pointer">${S.academy.logoUrl ? 'Change logo' : 'Upload logo'}
+          <input type="file" id="logoFile" accept="image/png,image/jpeg,image/webp" style="display:none"></label>
+        ${S.academy.logoUrl ? html`<button class="sm" data-act="removeLogo">Remove</button>` : ''}
+      </div>
+    </section>
+    <section class="card">
       <div class="row between"><h2>Locations & courts</h2><button class="sm primary" data-act="newLocation">+ Location</button></div>
       ${locs.length ? locs.map((l) => html`<div style="margin:12px 0;padding-top:12px;border-top:1px solid var(--border)">
         <div class="row between"><div><strong>${l.name}</strong> ${l.active ? '' : html`<span class="badge">Hidden</span>`}
@@ -800,7 +811,40 @@ VIEWS.setup = async () => {
       <div class="row" style="margin-top:12px"><button class="primary" type="submit">Save</button>
         ${settings.stripeConnected ? html`<button type="button" class="danger" data-act="disconnectStripe">Disconnect</button>` : ''}</div>
     </form>`.s;
+  document.getElementById('logoFile').addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (file) uploadLogo(file).catch((err) => toast(err.message, true));
+  });
 };
+
+// Shrinks the logo to at most 600px on its longest side before upload, keeping
+// transparency for PNG and WebP, then refreshes the top bar.
+async function uploadLogo(file) {
+  if (!/^image\/(png|jpeg|webp)$/.test(file.type)) throw new Error('Choose a PNG, JPG or WebP image');
+  // Read as a data: URL (the page's security policy allows data: images, not blob:).
+  const src = await new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(new Error('That image could not be read'));
+    r.readAsDataURL(file);
+  });
+  const img = await new Promise((resolve, reject) => {
+    const i = new Image();
+    i.onload = () => resolve(i);
+    i.onerror = () => reject(new Error('That image could not be read'));
+    i.src = src;
+  });
+  const scale = Math.min(1, 600 / Math.max(img.naturalWidth, img.naturalHeight));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(img.naturalWidth * scale);
+  canvas.height = Math.round(img.naturalHeight * scale);
+  canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+  const dataUrl = file.type === 'image/jpeg' ? canvas.toDataURL('image/jpeg', 0.9) : canvas.toDataURL('image/png');
+  await api('PUT', '/api/admin/logo', { dataUrl });
+  const me = await api('GET', '/api/me'); S.academy = me.academy;
+  TT.showLogo(S.academy.logoUrl, S.academy.name);
+  toast('Logo saved'); rerender();
+}
 
 VIEWS.billing = async () => {
   const sp = new URLSearchParams(location.search);
@@ -1469,6 +1513,12 @@ const acts = {
         rerender();
       },
     });
+  },
+  async removeLogo() {
+    if (!(await confirmBox('Remove your logo?', 'The app goes back to the plain tennis-ball mark.', 'Remove'))) return;
+    await api('DELETE', '/api/admin/logo');
+    const me = await api('GET', '/api/me'); S.academy = me.academy;
+    TT.showLogo(null); toast('Logo removed'); rerender();
   },
   async disconnectStripe() {
     if (!(await confirmBox('Disconnect Stripe?', 'Students won\'t be able to buy lessons by card until you reconnect.', 'Disconnect'))) return;

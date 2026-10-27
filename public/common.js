@@ -274,8 +274,25 @@ const TT = (() => {
     for (const m of muts) for (const n of m.addedNodes) if (n.nodeType === 1) enhance(n);
   }).observe(document.documentElement, { childList: true, subtree: true });
 
+  // The academy's own logo in place of the tennis-ball mark in the top bar
+  // (url null puts the mark back).
+  function showLogo(url, name) {
+    const bar = document.querySelector('.topbar .wrap');
+    if (!bar) return;
+    let img = bar.querySelector('img.ac-logo');
+    const mark = bar.querySelector('.brand-mark');
+    if (!url) { if (img) img.remove(); if (mark) mark.hidden = false; return; }
+    if (!img) {
+      img = document.createElement('img');
+      img.className = 'ac-logo';
+      (mark || bar.firstChild).before(img);
+    }
+    img.src = url; img.alt = name ? `${name} logo` : 'Logo';
+    if (mark) mark.hidden = true;
+  }
+
   return {
-    esc, html, raw, slug, token, api, setTz, fmtDay, fmtDate, fmtTime, fmtDateTime, dayKey, money, length, endTime,
+    esc, html, showLogo, raw, slug, token, api, setTz, fmtDay, fmtDate, fmtTime, fmtDateTime, dayKey, money, length, endTime,
     cap, monthLabel, currentMonth, addMonths, zonedToIso, isoToZoned, toast, modal, confirmBox, formValues, dollarsToCents, formatPhone, recentAcademies, rememberAcademy,
     get tz() { return tz; },
   };

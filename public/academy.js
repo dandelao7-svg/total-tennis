@@ -18,6 +18,12 @@
   TT.rememberAcademy(academy);
   document.title = `${academy.name} — Book Lessons`;
   $('acName').textContent = academy.name;
+  if (academy.logoUrl) {
+    TT.showLogo(academy.logoUrl, academy.name);
+    const img = document.createElement('img');
+    img.className = 'card-logo'; img.src = academy.logoUrl; img.alt = `${academy.name} logo`;
+    $('panel').prepend(img);
+  }
   const contact = [academy.contactEmail, academy.contactPhone].filter(Boolean).join(' · ');
   if (contact) $('contact').textContent = `Questions? ${contact}`;
   $('panel').classList.remove('hidden');

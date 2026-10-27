@@ -217,3 +217,9 @@ code { overflow-wrap: anywhere; word-break: break-word; }
 .home-link { display: flex; align-items: center; flex: 1; min-width: 0; color: inherit; text-decoration: none; border-radius: 8px; }
 .home-link:hover .title { text-decoration: underline; text-underline-offset: 3px; }
 .home-link:focus-visible { outline: 2px solid var(--ball); outline-offset: 2px; }
+
+/* An academy's own logo: on a white chip so dark logos show on the green bar */
+.topbar img.ac-logo { height: 32px; max-width: 120px; object-fit: contain; background: #fff; border-radius: 6px; padding: 2px; margin-right: 10px; flex: none; }
+.card-logo { display: block; max-height: 90px; max-width: 220px; object-fit: contain; margin: 0 auto 12px; }
+.logo-preview { max-height: 80px; max-width: 220px; object-fit: contain; border: 1px solid var(--border); border-radius: 8px; padding: 6px; background: #fff; }
+.brand-mark[hidden] { display: none; }

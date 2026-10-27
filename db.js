@@ -390,6 +390,16 @@ async function initSchema() {
     -- One free trial per owner email: FALSE when that email already had one.
     ALTER TABLE academies ADD COLUMN IF NOT EXISTS trial_eligible BOOLEAN NOT NULL DEFAULT TRUE;
 
+    -- Each academy's own logo, kept apart from academies so the row loaded on
+    -- every request stays small. logo_updated_at versions the logo's address.
+    CREATE TABLE IF NOT EXISTS academy_logos (
+      academy_id  INT PRIMARY KEY REFERENCES academies(id),
+      data        BYTEA NOT NULL,
+      mime        TEXT NOT NULL,
+      updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    ALTER TABLE academies ADD COLUMN IF NOT EXISTS logo_updated_at TIMESTAMPTZ;
+
     -- When the owner accepted the academy Terms of Service at sign-up, and which version.
     ALTER TABLE academies ADD COLUMN IF NOT EXISTS terms_accepted_at TIMESTAMPTZ;
     ALTER TABLE academies ADD COLUMN IF NOT EXISTS terms_version TEXT;

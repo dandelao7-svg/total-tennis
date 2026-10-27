@@ -150,6 +150,7 @@ function publicAcademy(a) {
     id: a.id, slug: a.slug, name: a.name, timezone: a.timezone,
     contactEmail: s.contact_email, contactPhone: s.contact_phone,
     privateLabel: s.private_label,
+    logoUrl: a.logo_updated_at ? `/api/academy/${a.slug}/logo?v=${new Date(a.logo_updated_at).getTime()}` : null,
     cardSurchargeBps: s.card_surcharge_bps,
     smsEnabled: !!s.sms_enabled,
   };
@@ -294,6 +295,9 @@ async function applySubscription(sub) {
     [sub.customer, status, sub.id, periodEnd || null, Number(sub.metadata?.academy_id) || 0]);
 }
 
+// Logo uploads arrive as a data: URL, bigger than the global 100KB limit allows,
+// so this path gets its own parser first.
+app.use('/api/admin/logo', express.json({ limit: '2mb' }));
 app.use(express.json({ limit: '100kb' }));
 app.use('/api/auth', rateLimit({ windowMs: 15 * 60 * 1000, limit: 20, standardHeaders: true, legacyHeaders: false }));
 app.use('/api/platform/login', rateLimit({ windowMs: 15 * 60 * 1000, limit: 10, standardHeaders: true, legacyHeaders: false }));
@@ -430,6 +434,17 @@ app.get('/api/site', (req, res) => res.json({
   legalName: process.env.PLATFORM_LEGAL_NAME || 'NextLao', supportEmail: process.env.SUPPORT_EMAIL || null,
   termsVersion: TERMS_VERSION, trialDays: TRIAL_DAYS,
 }));
+
+// An academy's logo. The ?v= in its address changes with each upload, so it
+// can be cached for a long time.
+app.get('/api/academy/:slug/logo', async (req, res) => {
+  const l = await db.one(
+    `SELECT l.data, l.mime FROM academy_logos l JOIN academies a ON a.id = l.academy_id WHERE a.slug = $1`,
+    [String(req.params.slug).toLowerCase()]);
+  if (!l) return res.status(404).end();
+  res.set({ 'Content-Type': l.mime, 'Cache-Control': 'public, max-age=31536000, immutable', 'Content-Disposition': 'inline' });
+  res.send(l.data);
+});
 
 app.get('/api/academy/:slug', async (req, res) => {
   const a = await db.one('SELECT * FROM academies WHERE slug = $1', [String(req.params.slug).toLowerCase()]);
@@ -2432,6 +2447,36 @@ app.put('/api/admin/settings', requireAuth, requireAdmin, async (req, res) => {
   const tz = req.body.timezone && validTimezone(req.body.timezone) ? req.body.timezone : req.academy.timezone;
   await db.query('UPDATE academies SET name = $2, timezone = $3, settings = settings || $4::jsonb WHERE id = $1',
     [req.aid, name, tz, JSON.stringify(patch)]);
+  res.json({ ok: true });
+});
+
+// The owner's logo: PNG, JPEG or WebP only (no SVG, which can carry script),
+// checked by its first bytes, not just its stated type.
+const LOGO_TYPES = {
+  'image/png': (b) => b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
+  'image/jpeg': (b) => b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff,
+  'image/webp': (b) => b.subarray(0, 4).toString('ascii') === 'RIFF' && b.subarray(8, 12).toString('ascii') === 'WEBP',
+};
+app.put('/api/admin/logo', requireAuth, requireAdmin, async (req, res) => {
+  const m = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=]+)$/.exec(String(req.body.dataUrl || ''));
+  if (!m) fail(400, 'Upload a PNG, JPG or WebP image');
+  const buf = Buffer.from(m[2], 'base64');
+  if (!buf.length || buf.length > 1024 * 1024) fail(400, 'The logo must be under 1 MB');
+  if (!LOGO_TYPES[m[1]](buf)) fail(400, 'That file is not a valid image');
+  await db.tx(async (t) => {
+    await t.query(
+      `INSERT INTO academy_logos (academy_id, data, mime) VALUES ($1, $2, $3)
+       ON CONFLICT (academy_id) DO UPDATE SET data = EXCLUDED.data, mime = EXCLUDED.mime, updated_at = now()`,
+      [req.aid, buf, m[1]]);
+    await t.query('UPDATE academies SET logo_updated_at = now() WHERE id = $1', [req.aid]);
+  });
+  res.json({ ok: true });
+});
+app.delete('/api/admin/logo', requireAuth, requireAdmin, async (req, res) => {
+  await db.tx(async (t) => {
+    await t.query('DELETE FROM academy_logos WHERE academy_id = $1', [req.aid]);
+    await t.query('UPDATE academies SET logo_updated_at = NULL WHERE id = $1', [req.aid]);
+  });
   res.json({ ok: true });
 });
 
