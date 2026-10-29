@@ -307,6 +307,9 @@ app.get('/health', (req, res) => res.json({ ok: true }));
 
 // ── Academy sign-up (a new paying customer) ──────────────────
 
+// Answers to "How did you hear about us?" on the sign-up form.
+const HEARD_FROM = ['referral', 'testimonial', 'search', 'social', 'event', 'other'];
+
 // Card-first trials: once platform billing is set up, the free trial starts at
 // Stripe with a card on file. Until then it starts when the email is confirmed.
 const billingOn = () => !!(platformStripe && process.env.PLATFORM_STRIPE_PRICE_ID);
@@ -376,8 +379,11 @@ app.post('/api/auth/academy-signup', async (req, res) => {
     verified: !verifyByEmail,
     trialEligible,
   }));
-  await db.query('UPDATE academies SET terms_accepted_at = now(), terms_version = $2, terms_accepted_ip = $3 WHERE id = $1',
-    [academy.id, TERMS_VERSION, req.ip]);
+  await db.query(
+    `UPDATE academies SET terms_accepted_at = now(), terms_version = $2, terms_accepted_ip = $3, heard_from = $4, heard_detail = $5
+      WHERE id = $1`,
+    [academy.id, TERMS_VERSION, req.ip, HEARD_FROM.includes(req.body.heardFrom) ? req.body.heardFrom : null,
+     str(req.body.heardDetail, 'Who referred you', { optional: true, max: 200 })]);
   if (!verifyByEmail) return res.json({ token: signToken(owner), slug });
   await sendVerification(req, academy, owner);
   res.json({ checkEmail: true, email: owner.email, slug });
@@ -2581,6 +2587,7 @@ app.get('/api/platform/academies', requirePlatform, async (req, res) => {
             (a.stripe_secret_enc IS NOT NULL) AS "stripeConnected",
             (a.owner_verified_at IS NOT NULL) AS verified, a.trial_eligible AS "trialEligible",
             a.terms_accepted_at AS "termsAcceptedAt", a.terms_version AS "termsVersion",
+            a.heard_from AS "heardFrom", a.heard_detail AS "heardDetail",
             (SELECT email FROM users u WHERE u.academy_id = a.id AND u.role = 'admin' ORDER BY id LIMIT 1) AS "ownerEmail",
             (SELECT count(*)::int FROM users u WHERE u.academy_id = a.id AND u.role = 'student') AS students,
             (SELECT count(*)::int FROM group_sessions g WHERE g.academy_id = a.id AND g.starts_at > now() - interval '30 days') AS "sessions30d",

@@ -20,7 +20,7 @@
     $('table').innerHTML = html`<tr><th>Academy</th><th>Owner</th><th>Status</th><th class="num">Students</th><th class="num">Lessons 30d</th><th class="num">Sales 30d</th><th>Stripe</th><th>Created</th></tr>
       ${rows.map((r) => html`<tr>
         <td><a href="/a/${r.slug}" target="_blank" rel="noopener">${r.name}</a><div class="small muted">/a/${r.slug}</div></td>
-        <td class="small">${r.ownerEmail || ''}</td>
+        <td class="small">${r.ownerEmail || ''}${r.heardFrom ? html`<div class="muted">Heard via: ${r.heardFrom}${r.heardDetail ? ` (${r.heardDetail})` : ''}</div>` : ''}</td>
         <td><select data-id="${r.id}" style="min-width:120px">${STATUSES.map((s) => html`<option ${raw(s === r.subStatus ? 'selected' : '')}>${s}</option>`)}</select>
           ${!r.verified ? html`<div class="small muted">Email not confirmed yet</div>`
             : r.subStatus === 'trialing' && r.trialEndsAt ? html`<div class="small muted">ends ${TT.fmtDate(r.trialEndsAt)}</div>`

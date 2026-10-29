@@ -39,6 +39,18 @@
         <input id="email" name="email" type="email" autocomplete="email" required>
         <label for="password">Password</label>
         <input id="password" name="password" type="password" autocomplete="new-password" required>
+        <label for="heardFrom">How did you hear about us? <span class="muted small">(optional)</span></label>
+        <select id="heardFrom" name="heardFrom">
+          <option value="">Choose one…</option>
+          <option value="referral">Another academy or a friend told me</option>
+          <option value="testimonial">A review or testimonial</option>
+          <option value="search">Google or another search</option>
+          <option value="social">Social media</option>
+          <option value="event">A tennis event or tournament</option>
+          <option value="other">Other</option>
+        </select>
+        <div id="heardDetailRow" class="hidden"><label for="heardDetail" id="heardDetailLabel">Which academy or person?</label>
+          <input id="heardDetail" name="heardDetail" maxlength="200" placeholder="e.g. Total Tennis Academy"></div>
         <label class="check small" style="margin-top:12px"><input type="checkbox" name="acceptTerms" id="acceptTerms">
           I have read and agree to the <a href="/terms" target="_blank" rel="noopener">Terms of Service</a>.</label>
         <input type="hidden" name="timezone" id="timezone">

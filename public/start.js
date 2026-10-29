@@ -32,6 +32,13 @@
     $('slug').value = e.target.value.toLowerCase().replace(/&/g, 'and').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
   });
 
+  // Ask who it was when they say an academy, a friend or a testimonial sent them.
+  $('heardFrom').addEventListener('change', (e) => {
+    const v = e.target.value;
+    $('heardDetailRow').classList.toggle('hidden', !['referral', 'testimonial', 'other'].includes(v));
+    $('heardDetailLabel').textContent = v === 'other' ? 'Tell us more' : v === 'testimonial' ? 'Whose review or testimonial?' : 'Which academy or person?';
+  });
+
   let pending = null;
   $('form').addEventListener('submit', async (e) => {
     e.preventDefault();

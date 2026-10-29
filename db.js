@@ -405,6 +405,10 @@ async function initSchema() {
     ALTER TABLE academies ADD COLUMN IF NOT EXISTS terms_version TEXT;
     ALTER TABLE academies ADD COLUMN IF NOT EXISTS terms_accepted_ip TEXT;
 
+    -- "How did you hear about us?" from the sign-up form (for crediting referrals).
+    ALTER TABLE academies ADD COLUMN IF NOT EXISTS heard_from TEXT;
+    ALTER TABLE academies ADD COLUMN IF NOT EXISTS heard_detail TEXT;
+
     -- Logins cancelled by logging out, kept until they would have expired.
     CREATE TABLE IF NOT EXISTS revoked_tokens (
       jti         TEXT PRIMARY KEY,
