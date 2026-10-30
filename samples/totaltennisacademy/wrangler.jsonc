@@ -1,0 +1,8 @@
+// Cloudflare settings for Total Tennis Academy's website (a static site).
+// Publish from this folder with: npx wrangler deploy
+// Kept separate from the booking app, which runs on Railway.
+{
+  "name": "totaltennisacademy",
+  "compatibility_date": "2026-10-23",
+  "assets": { "directory": "./site" }
+}
