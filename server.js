@@ -30,9 +30,9 @@ if (!encryptionConfigured()) console.warn('ENCRYPTION_KEY not set — academies 
 // Platform Stripe account: academies pay us a monthly subscription.
 const platformStripe = process.env.PLATFORM_STRIPE_SECRET_KEY ? Stripe(process.env.PLATFORM_STRIPE_SECRET_KEY) : null;
 const TRIAL_DAYS = Number(process.env.TRIAL_DAYS || 30);
-const PLATFORM_NAME = process.env.PLATFORM_NAME || 'CourtDesk';
+const PLATFORM_NAME = process.env.PLATFORM_NAME || 'TennisDesk';
 // The academy Terms of Service at /terms. Bump the version whenever its wording changes.
-const TERMS_VERSION = '2026-10-26';
+const TERMS_VERSION = '2026-10-31';
 
 const app = express();
 app.set('trust proxy', 1);

@@ -1,4 +1,4 @@
-# CourtDesk — lesson booking for tennis academies
+# TennisDesk — lesson booking for tennis academies
 
 A multi-academy (SaaS) web app. Each academy pays a monthly subscription and gets its
 own booking page at `/a/<slug>` where students sign up, buy lesson packs and book
