@@ -12,6 +12,7 @@ const db        = require('./db');
 const { encrypt, decrypt, isConfigured: encryptionConfigured } = require('./lib/crypto');
 const email     = require('./lib/email');
 const sms       = require('./lib/sms');
+const { buildSignedPdf } = require('./lib/esign');
 
 const PROD = process.env.NODE_ENV === 'production';
 // In production, refuse to start half-configured — and name everything that's
@@ -298,6 +299,8 @@ async function applySubscription(sub) {
 // Logo uploads arrive as a data: URL, bigger than the global 100KB limit allows,
 // so this path gets its own parser first.
 app.use('/api/admin/logo', express.json({ limit: '2mb' }));
+// PDFs sent for signature (up to 8 MB, a third bigger as base64).
+app.post('/api/platform/sign-docs', express.json({ limit: '12mb' }));
 app.use(express.json({ limit: '100kb' }));
 app.use('/api/auth', rateLimit({ windowMs: 15 * 60 * 1000, limit: 20, standardHeaders: true, legacyHeaders: false }));
 app.use('/api/platform/login', rateLimit({ windowMs: 15 * 60 * 1000, limit: 10, standardHeaders: true, legacyHeaders: false }));
@@ -2617,6 +2620,179 @@ app.put('/api/platform/academies/:id', requirePlatform, async (req, res) => {
   res.json({ ok: true });
 });
 
+// ── E-signatures (customer agreements) ───────────────────────
+// You upload a PDF and name who signs it; each signer gets a private link,
+// reads the document, types their name and agrees. Once everyone has signed,
+// the signed copy (original + certificate page) is emailed to all of them.
+
+const SIGN_MAX_BYTES = 8 * 1024 * 1024;
+const SIGN_STATUSES = { open: 'Waiting for signatures', completed: 'Signed by everyone', void: 'Cancelled' };
+const pdfName = (title, suffix = '') => `${String(title).replace(/[^\w .,-]+/g, '').trim().slice(0, 80) || 'Document'}${suffix}.pdf`;
+
+function newSignLink(req) {
+  const token = crypto.randomBytes(32).toString('base64url');
+  return { token, hash: sha256(token), url: `${originOf(req)}/sign/${token}` };
+}
+async function emailSignLink(doc, party, url) {
+  return email.sendEmail({
+    to: party.email,
+    subject: `Please sign: ${doc.title}`,
+    replyTo: process.env.SUPPORT_EMAIL || undefined,
+    text: `Hi ${party.name},\n\nYou've been sent "${doc.title}" to read and sign electronically.\n\n`
+      + `Open this link to read and sign it:\n${url}\n\n`
+      + `The link is just for you, so please don't forward it. When everyone has signed, you'll get the signed copy by email.\n\n`
+      + `${PLATFORM_NAME}`,
+  });
+}
+
+// Everyone has signed: build the signed copy once and email it to every signer.
+async function completeSignDoc(docId) {
+  const doc = await db.one(`SELECT * FROM sign_docs WHERE id = $1`, [docId]);
+  const parties = await db.many(`SELECT * FROM sign_parties WHERE doc_id = $1 ORDER BY position`, [docId]);
+  if (!doc || doc.status !== 'open' || parties.some((p) => !p.signed_at)) return;
+  const completedAt = new Date();
+  const signed = await buildSignedPdf({
+    original: doc.original_pdf, title: doc.title, sha256: doc.original_sha256, completedAt,
+    parties: parties.map((p) => ({
+      email: p.email, viewedAt: p.viewed_at, signedAt: p.signed_at, signedName: p.signed_name,
+      signedTitle: p.signed_title, signedIp: p.signed_ip, signedAgent: p.signed_agent,
+    })),
+  });
+  const r = await db.one(
+    `UPDATE sign_docs SET status = 'completed', signed_pdf = $2, completed_at = $3
+      WHERE id = $1 AND status = 'open' RETURNING id`, [docId, signed, completedAt]);
+  if (!r) return; // another request finished it first
+  for (const p of parties) {
+    await email.sendEmail({
+      to: p.email,
+      subject: `Signed: ${doc.title}`,
+      replyTo: process.env.SUPPORT_EMAIL || undefined,
+      text: `Hi ${p.name},\n\nEveryone has signed "${doc.title}". The signed copy is attached; `
+        + `the last page is the signature certificate showing who signed and when.\n\nPlease keep it for your records.\n\n${PLATFORM_NAME}`,
+      attachments: [{ filename: pdfName(doc.title, ' - signed'), content: signed }],
+    }).catch((err) => console.error('Signed-copy email failed:', err.message));
+  }
+}
+
+app.get('/api/platform/sign-docs', requirePlatform, async (req, res) => {
+  const docs = await db.many(
+    `SELECT id, title, status, original_sha256 AS sha256, created_at AS "createdAt", completed_at AS "completedAt"
+       FROM sign_docs ORDER BY created_at DESC`);
+  const parties = await db.many(
+    `SELECT id, doc_id AS "docId", name, email, viewed_at AS "viewedAt", signed_at AS "signedAt",
+            signed_name AS "signedName", signed_title AS "signedTitle"
+       FROM sign_parties ORDER BY position`);
+  res.json(docs.map((d) => ({ ...d, statusLabel: SIGN_STATUSES[d.status], parties: parties.filter((p) => p.docId === d.id) })));
+});
+
+app.post('/api/platform/sign-docs', requirePlatform, async (req, res) => {
+  const title = str(req.body.title, 'Document title', { max: 200 });
+  const m = /^data:application\/pdf;base64,([A-Za-z0-9+/=]+)$/.exec(String(req.body.dataUrl || ''));
+  if (!m) fail(400, 'Choose a PDF file');
+  const pdf = Buffer.from(m[1], 'base64');
+  if (!pdf.length || pdf.length > SIGN_MAX_BYTES) fail(400, 'The PDF must be under 8 MB');
+  if (pdf.subarray(0, 5).toString('ascii') !== '%PDF-') fail(400, 'That file is not a PDF');
+  const list = Array.isArray(req.body.parties) ? req.body.parties : [];
+  if (!list.length || list.length > 4) fail(400, 'Add between 1 and 4 people to sign');
+  const parties = list.map((p, i) => {
+    const em = str(p.email, `Email for signer ${i + 1}`, { max: 200 }).toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)) fail(400, `Email for signer ${i + 1} is invalid`);
+    return { name: str(p.name, `Name for signer ${i + 1}`, { max: 120 }), email: em, ...newSignLink(req) };
+  });
+  const doc = await db.tx(async (t) => {
+    const d = (await t.query(
+      `INSERT INTO sign_docs (title, original_pdf, original_sha256) VALUES ($1, $2, $3) RETURNING id, title`,
+      [title, pdf, sha256(pdf)])).rows[0];
+    for (const [i, p] of parties.entries()) {
+      await t.query(`INSERT INTO sign_parties (doc_id, position, name, email, token_hash) VALUES ($1, $2, $3, $4, $5)`,
+        [d.id, i, p.name, p.email, p.hash]);
+    }
+    return d;
+  });
+  const links = [];
+  for (const p of parties) {
+    const emailed = req.body.sendEmails === true ? await emailSignLink(doc, p, p.url) : false;
+    links.push({ name: p.name, email: p.email, url: p.url, emailed });
+  }
+  res.json({ id: doc.id, links });
+});
+
+// A fresh link for one signer (the old one stops working), optionally emailed.
+app.post('/api/platform/sign-docs/:id/parties/:pid/link', requirePlatform, async (req, res) => {
+  const p = await db.one(
+    `SELECT p.*, d.title, d.status FROM sign_parties p JOIN sign_docs d ON d.id = p.doc_id
+      WHERE p.id = $1 AND p.doc_id = $2`, [int(req.params.pid, 'Signer'), int(req.params.id, 'Document')]);
+  if (!p) fail(404, 'Signer not found');
+  if (p.status !== 'open') fail(400, 'This document is no longer waiting for signatures');
+  if (p.signed_at) fail(400, `${p.name} has already signed`);
+  const link = newSignLink(req);
+  await db.query(`UPDATE sign_parties SET token_hash = $2 WHERE id = $1`, [p.id, link.hash]);
+  const emailed = req.body.send === true ? await emailSignLink(p, p, link.url) : false;
+  res.json({ url: link.url, emailed });
+});
+
+app.post('/api/platform/sign-docs/:id/void', requirePlatform, async (req, res) => {
+  const r = await db.one(`UPDATE sign_docs SET status = 'void' WHERE id = $1 AND status = 'open' RETURNING id`,
+    [int(req.params.id, 'Document')]);
+  if (!r) fail(400, 'Only a document still waiting for signatures can be cancelled');
+  res.json({ ok: true });
+});
+
+app.get('/api/platform/sign-docs/:id/pdf', requirePlatform, async (req, res) => {
+  const d = await db.one(`SELECT title, original_pdf, signed_pdf FROM sign_docs WHERE id = $1`, [int(req.params.id, 'Document')]);
+  if (!d) fail(404, 'Document not found');
+  res.type('application/pdf').attachment(pdfName(d.title, d.signed_pdf ? ' - signed' : '')).send(d.signed_pdf || d.original_pdf);
+});
+
+// The signer's side. The token in the link is the only key, so look it up by its hash.
+async function signerOf(req) {
+  const p = await db.one(
+    `SELECT p.*, d.title, d.status, d.original_sha256 FROM sign_parties p JOIN sign_docs d ON d.id = p.doc_id
+      WHERE p.token_hash = $1`, [sha256(String(req.params.token || ''))]);
+  if (!p) fail(404, 'This signing link is not valid. It may have been replaced by a newer one; ask the sender for a new link.');
+  return p;
+}
+
+app.get('/api/sign/:token', async (req, res) => {
+  res.set('X-Robots-Tag', 'noindex');
+  const p = await signerOf(req);
+  if (!p.viewed_at && p.status === 'open') await db.query(`UPDATE sign_parties SET viewed_at = now() WHERE id = $1`, [p.id]);
+  const all = await db.many(`SELECT name, signed_at FROM sign_parties WHERE doc_id = $1 ORDER BY position`, [p.doc_id]);
+  res.json({
+    title: p.title, status: p.status, sha256: p.original_sha256,
+    me: { name: p.name, email: p.email, signedAt: p.signed_at, signedName: p.signed_name },
+    parties: all.map((x) => ({ name: x.name, signed: !!x.signed_at })),
+  });
+});
+
+app.get('/api/sign/:token/pdf', async (req, res) => {
+  res.set('X-Robots-Tag', 'noindex');
+  const p = await signerOf(req);
+  if (p.status === 'void') fail(410, 'This document was cancelled');
+  const d = await db.one(`SELECT original_pdf, signed_pdf FROM sign_docs WHERE id = $1`, [p.doc_id]);
+  res.type('application/pdf')
+    .set('Content-Disposition', `${req.query.download ? 'attachment' : 'inline'}; filename="${pdfName(p.title, d.signed_pdf ? ' - signed' : '')}"`)
+    .send(d.signed_pdf || d.original_pdf);
+});
+
+app.post('/api/sign/:token', async (req, res) => {
+  res.set('X-Robots-Tag', 'noindex');
+  const p = await signerOf(req);
+  if (p.status === 'void') fail(410, 'This document was cancelled');
+  if (p.status === 'completed' || p.signed_at) fail(400, 'You have already signed this document');
+  if (req.body.consent !== true) fail(400, 'Tick the box to agree to sign electronically');
+  const name = str(req.body.name, 'Your full name', { max: 120 });
+  const title = str(req.body.title, 'Title', { optional: true, max: 120 });
+  const r = await db.one(
+    `UPDATE sign_parties SET signed_at = now(), signed_name = $2, signed_title = $3, signed_ip = $4, signed_agent = $5,
+            viewed_at = COALESCE(viewed_at, now())
+      WHERE id = $1 AND signed_at IS NULL RETURNING id`,
+    [p.id, name, title, req.ip, String(req.get('user-agent') || '').slice(0, 300)]);
+  if (!r) fail(400, 'You have already signed this document');
+  await completeSignDoc(p.doc_id);
+  res.json({ ok: true });
+});
+
 // ── Pages & errors ───────────────────────────────────────────
 
 const PUBLIC = path.join(__dirname, 'public');
@@ -2627,6 +2803,7 @@ app.get('/start/verify', page('start.html'));
 app.get('/terms', page('terms.html'));
 app.get('/login', page('login.html'));
 app.get('/platform', page('platform.html'));
+app.get('/sign/:token', (req, res) => { res.set('X-Robots-Tag', 'noindex'); page('sign.html')(req, res); });
 app.get('/a/:slug', page('academy.html'));
 app.get('/a/:slug/reset', page('academy.html'));
 app.get('/a/:slug/app', page('app.html'));

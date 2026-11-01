@@ -409,6 +409,35 @@ async function initSchema() {
     ALTER TABLE academies ADD COLUMN IF NOT EXISTS heard_from TEXT;
     ALTER TABLE academies ADD COLUMN IF NOT EXISTS heard_detail TEXT;
 
+    -- Documents the operator sends for e-signature (customer agreements).
+    -- original_sha256 fingerprints the exact PDF everyone signs; signed_pdf is
+    -- the original plus a signature certificate, made once everyone has signed.
+    CREATE TABLE IF NOT EXISTS sign_docs (
+      id              SERIAL PRIMARY KEY,
+      title           TEXT NOT NULL,
+      original_pdf    BYTEA NOT NULL,
+      original_sha256 TEXT NOT NULL,
+      status          TEXT NOT NULL DEFAULT 'open',   -- open | completed | void
+      signed_pdf      BYTEA,
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+      completed_at    TIMESTAMPTZ
+    );
+    -- One row per person who signs. The link token is stored only as a hash.
+    CREATE TABLE IF NOT EXISTS sign_parties (
+      id           SERIAL PRIMARY KEY,
+      doc_id       INT NOT NULL REFERENCES sign_docs(id),
+      position     INT NOT NULL,
+      name         TEXT NOT NULL,
+      email        TEXT NOT NULL,
+      token_hash   TEXT NOT NULL UNIQUE,
+      viewed_at    TIMESTAMPTZ,
+      signed_at    TIMESTAMPTZ,
+      signed_name  TEXT,
+      signed_title TEXT,
+      signed_ip    TEXT,
+      signed_agent TEXT
+    );
+
     -- Logins cancelled by logging out, kept until they would have expired.
     CREATE TABLE IF NOT EXISTS revoked_tokens (
       jti         TEXT PRIMARY KEY,

@@ -24,6 +24,24 @@
       <h1>Academies</h1>
       <div class="stats" id="stats"></div>
       <div class="table-wrap"><table id="table"></table></div>
+
+      <h1 style="margin-top:36px">Documents to sign</h1>
+      <p class="muted">Send a PDF (like a customer agreement) for e-signature. Each person gets a private link; when everyone has signed, they all get the signed copy by email.</p>
+      <form class="card" id="signForm" novalidate>
+        <h2>Send a document</h2>
+        <div class="notice error hidden" id="signErr"></div>
+        <label for="signTitle">Document title</label>
+        <input id="signTitle" maxlength="200" placeholder="e.g. Service Agreement — Total Tennis Academy">
+        <label for="signFile">PDF file</label>
+        <input id="signFile" type="file" accept="application/pdf,.pdf">
+        <label>Who signs</label>
+        <div id="signers"></div>
+        <button type="button" class="link small" id="addSigner">+ Add another person</button>
+        <label class="check small" style="margin-top:12px"><input type="checkbox" id="signEmail" checked> Email each person their signing link now</label>
+        <button class="primary" type="submit" id="signSubmit" style="margin-top:12px">Send for signature</button>
+        <div id="signLinks"></div>
+      </form>
+      <div id="docs"></div>
     </div>
   </main>
   <script src="/common.js"></script>
