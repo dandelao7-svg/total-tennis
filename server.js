@@ -154,6 +154,7 @@ function publicAcademy(a) {
     logoUrl: a.logo_updated_at ? `/api/academy/${a.slug}/logo?v=${new Date(a.logo_updated_at).getTime()}` : null,
     cardSurchargeBps: s.card_surcharge_bps,
     smsEnabled: !!s.sms_enabled,
+    creditGraceMonths: s.credit_grace_months,
   };
 }
 

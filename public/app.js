@@ -18,11 +18,19 @@ const PLs = () => `${PL()}s`;
 const pl = () => PL().toLowerCase();
 const pls = () => PLs().toLowerCase();
 
+// How long a month's credits last, in words (Setup → "Extra months credits stay valid").
+function creditWindow() {
+  const g = S.academy.creditGraceMonths ?? 1;
+  if (g === 0) return 'Credits can be used until the end of that month.';
+  if (g === 1) return 'Credits can be used any time until the end of the month after.';
+  return `Credits can be used any time until ${g} months after that month ends.`;
+}
+
 const TABS = () => ({
-  student: [['book', 'Book a lesson'], ['my', 'My lessons'], ['buy', 'Buy lessons'], ['private', PLs()], ['account', 'Account']],
-  pro: [['sessions', 'My schedule'], ['students', 'Students'], ['privates', PLs()], ['hours', 'My hours'], ['account', 'Account']],
+  student: [['book', 'Book a lesson'], ['my', 'My lessons'], ['buy', 'Buy lessons'], ['private', PLs()], ['help', 'Help'], ['account', 'Account']],
+  pro: [['sessions', 'My schedule'], ['students', 'Students'], ['privates', PLs()], ['hours', 'My hours'], ['help', 'Help'], ['account', 'Account']],
   admin: [['dashboard', 'Dashboard'], ['sessions', 'Schedule'], ['students', 'Students'], ['privates', PLs()],
-    ['payroll', 'Payroll'], ['payments', 'Payments'], ['setup', 'Setup'], ['billing', 'Billing'], ['account', 'Account']],
+    ['payroll', 'Payroll'], ['payments', 'Payments'], ['setup', 'Setup'], ['billing', 'Billing'], ['help', 'Help'], ['account', 'Account']],
 });
 
 function route() {
@@ -294,7 +302,7 @@ VIEWS.buy = async (params) => {
         ${[0, 1, 2].map((i) => { const m = TT.addMonths(cur, i); return html`<option value="${m}" ${raw(m === month ? 'selected' : '')}>${TT.monthLabel(m)}</option>`; })}
       </select>
     </div>
-    <p class="hint" style="margin-top:-6px">Credits can be used any time until the end of the month after.</p>
+    <p class="hint" style="margin-top:-6px">${creditWindow()}</p>
     ${byLen.map((g) => html`<h2 style="margin-top:16px">${g.m === 60 ? '1-hour' : '1½-hour'} group lessons</h2>
       <div class="grid grid-2">${g.packs.map((p) => html`<div class="card">
         <h3>${p.name}</h3>
@@ -330,7 +338,7 @@ VIEWS.private = async () => {
       <strong>${money(p.priceCents)}</strong>
       <button class="primary sm" data-act="bookPrivate" data-id="${p.id}" data-pro="${p.proName}" data-price="${p.priceCents}" data-zelle="${p.proZelle || ''}" data-when="${p.startsAt}">Book</button>
     </div>`)}</div>`)
-    : html`<div class="empty card">No open private-lesson times right now. Contact ${S.academy.contactPhone || S.academy.contactEmail || 'the academy'} to arrange one.</div>`}`.s;
+    : html`<div class="empty card">No open ${pl()} times right now. Contact ${S.academy.contactPhone || S.academy.contactEmail || 'the academy'} to arrange one.</div>`}`.s;
 };
 
 VIEWS.account = async () => {
