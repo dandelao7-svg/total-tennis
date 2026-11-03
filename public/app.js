@@ -497,7 +497,7 @@ VIEWS.hours = async (params) => {
       <div class="stat"><div class="n">${p.n}</div><div class="l">${PLs()}</div></div>
       ${!h.onAgreement ? html`<div class="stat"><div class="n">${money(p.feeOwedCents)}</div><div class="l">Court fees still owed to academy</div></div>` : ''}
     </div>
-    ${courtAgreementSection(agreement)}
+    ${showAgreement(agreement) ? courtAgreementSection(agreement) : ''}
     ${h.payrollPaid ? html`<div class="notice info">Group pay for ${TT.monthLabel(month)} marked paid (${money(h.payrollPaid.amountCents)}) on ${TT.fmtDate(h.payrollPaid.paidAt)}.</div>` : ''}
     <h2>Group lessons in ${TT.monthLabel(month)}</h2>
     ${h.sessions.length ? html`<div class="table-wrap"><table>
@@ -517,6 +517,11 @@ const blockTime = (x) => `${clock(x.startMinute)}–${clock(x.startMinute + x.mi
 const dayLabel = (d) => new Date(`${d}T12:00:00Z`).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' });
 const todayLocal = () => TT.isoToZoned(new Date().toISOString()).slice(0, 10);
 const LENGTHS = [30, 60, 90, 120, 150, 180, 240, 300, 360, 480];
+
+// Pros without a court agreement don't see the section at all; the owner always
+// does, since that's where one is set up.
+const showAgreement = (a) => isAdmin() || a.blocks.length > 0
+  || a.requests.some((r) => r.status === 'pending') || !!(a.statement && a.statement.dates.length);
 
 function courtAgreementSection(a) {
   const owner = isAdmin();
@@ -694,7 +699,7 @@ VIEWS.payments = async (params) => {
     </table></div>` : html`<div class="empty card">No payments this month.</div>`}
     <p class="hint">Refunds for card payments are made in your Stripe dashboard; then remove the matching credits from the student's page.</p>
 
-    <h2 style="margin-top:24px">Monthly auto-renewal</h2>
+    ${ren.plans.length || S.academy.renewAvailable ? html`<h2 style="margin-top:24px">Monthly auto-renewal</h2>` : ''}
     ${ren.plans.length ? html`<div class="table-wrap"><table>
       <tr><th>Student</th><th>Pack</th><th class="num">Per month</th><th>Status</th><th></th></tr>
       ${ren.plans.map((p) => html`<tr>
@@ -707,8 +712,7 @@ VIEWS.payments = async (params) => {
         <td>${p.status === 'canceled' ? '' : p.turnedOff
           ? html`<button class="sm" data-act="renewal" data-admin="1" data-id="${p.id}" data-on="1">Turn on</button>`
           : html`<button class="sm" data-act="renewal" data-admin="1" data-id="${p.id}" data-on="0">Turn off</button>`}</td></tr>`)}
-    </table></div>` : html`<p class="muted">${S.academy.renewAvailable ? 'No students on monthly renewal yet.'
-      : 'Monthly renewal turns on once card payments and the Stripe webhook are connected (Setup → Card payments).'}</p>`}
+    </table></div>` : S.academy.renewAvailable ? html`<p class="muted">No students on monthly renewal yet.</p>` : ''}
     ${S.academy.devPayments && ren.plans.length ? html`<p class="hint">Test mode: <button class="link small" data-act="devRenew" data-month="${TT.addMonths(TT.currentMonth(), 1)}">pretend it's the 1st of ${TT.monthLabel(TT.addMonths(TT.currentMonth(), 1))}</button> to run renewals.</p>` : ''}
 
     <h2 style="margin-top:24px">Not renewed for ${TT.monthLabel(month)}</h2>
@@ -790,9 +794,8 @@ VIEWS.setup = async () => {
           <p class="hint">Added to card payments so you net the full price; students see it before paying. 0 = off, at most 3.
             Card rules don't allow it on debit cards, and some states limit it — check with Stripe or your accountant before turning it on.</p></div>
       </div>
-      <label class="check" style="margin-top:12px"><input type="checkbox" name="sms_enabled" ${raw(st.sms_enabled ? 'checked' : '')}>
-        Text students who opted in when their lesson is cancelled</label>
-      <p class="hint">${settings.smsConfigured ? 'Texting is set up.' : 'Texting isn\'t switched on for the app yet — until then, use the "copy phone numbers" button after cancelling.'}</p>
+      ${settings.smsConfigured ? html`<label class="check" style="margin-top:12px"><input type="checkbox" name="sms_enabled" ${raw(st.sms_enabled ? 'checked' : '')}>
+        Text students who opted in when their lesson is cancelled</label>` : ''}
       <button class="primary" type="submit" style="margin-top:12px">Save settings</button>
     </form>
 

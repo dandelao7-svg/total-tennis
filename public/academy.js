@@ -17,6 +17,7 @@
   }
   TT.rememberAcademy(academy);
   document.title = `${academy.name} — Book Lessons`;
+  if (!academy.smsEnabled) $('smsOptInRow').remove();
   $('acName').textContent = academy.name;
   if (academy.logoUrl) {
     TT.showLogo(academy.logoUrl, academy.name);

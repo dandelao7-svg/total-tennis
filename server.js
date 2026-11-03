@@ -153,7 +153,8 @@ function publicAcademy(a) {
     privateLabel: s.private_label,
     logoUrl: a.logo_updated_at ? `/api/academy/${a.slug}/logo?v=${new Date(a.logo_updated_at).getTime()}` : null,
     cardSurchargeBps: s.card_surcharge_bps,
-    smsEnabled: !!s.sms_enabled,
+    // Texting needs both the academy's setting and the platform's SMS account.
+    smsEnabled: !!s.sms_enabled && (sms.isConfigured() || !PROD),
     creditGraceMonths: s.credit_grace_months,
   };
 }
