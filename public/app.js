@@ -30,8 +30,10 @@ const TABS = () => ({
   student: [['book', 'Book a lesson'], ['my', 'My lessons'], ['buy', 'Buy lessons'], ['private', PLs()], ['help', 'Help'], ['account', 'Account']],
   pro: [['sessions', 'My schedule'], ['students', 'Students'], ['privates', PLs()], ['hours', 'My hours'], ['help', 'Help'], ['account', 'Account']],
   admin: [['dashboard', 'Dashboard'], ['sessions', 'Schedule'], ['students', 'Students'], ['privates', PLs()],
-    ['payroll', 'Payroll'], ['payments', 'Payments'], ['setup', 'Setup'], ['billing', 'Billing'], ['help', 'Help'], ['account', 'Account']],
+    ['payroll', 'Payroll'], ['payments', 'Payments'], ['setup', 'Setup'], ['help', 'Help'], ['account', 'Account']],
 });
+// Pages reached from inside another tab rather than having their own; the tab they highlight.
+const SUBPAGES = { admin: { hours: 'payroll', billing: 'account' } };
 
 function route() {
   const [name, qs] = (location.hash.slice(1) || '').split('?');
@@ -53,11 +55,19 @@ async function boot() {
   document.getElementById('acName').textContent = S.academy.name;
   TT.showLogo(S.academy.logoUrl, S.academy.name);
   document.getElementById('who').textContent = S.me.name;
+  // Students only get the one-on-one tab when there's something in it.
+  if (S.me.role === 'student') {
+    const [open, mine] = await Promise.all([api('GET', '/api/private/open'), api('GET', '/api/my/private')]).catch(() => [[1], []]);
+    S.hidePrivate = !open.length && !mine.length;
+  }
   window.addEventListener('hashchange', render);
   render();
 }
 
-function tabsFor() { const t = TABS(); return t[S.me.role] || t.student; }
+function tabsFor() {
+  const t = (TABS()[S.me.role] || TABS().student);
+  return S.hidePrivate ? t.filter(([k]) => k !== 'private') : t;
+}
 
 function renderTabs(active) {
   const tabs = tabsFor();
@@ -83,7 +93,7 @@ function renderBanner() {
 async function render() {
   let { name, params } = route();
   if (!S.academy.live) {
-    renderTabs(S.me.role === 'admin' ? 'billing' : '');
+    renderTabs(S.me.role === 'admin' ? 'account' : '');
     if (S.me.role === 'admin') { if (name !== 'billing' && name !== 'account') name = 'billing'; }
     else {
       $view.innerHTML = html`<div class="card"><h2>Online booking is paused</h2>
@@ -92,10 +102,11 @@ async function render() {
       return;
     }
   }
-  // Owners also reach a pro's hours page from Payroll, though it isn't a tab.
-  const allowed = [...tabsFor().map(([k]) => k), ...(isAdmin() ? ['hours'] : [])];
+  // Owners also reach a pro's hours (from Payroll) and Billing (from Account), though they aren't tabs.
+  const subpages = SUBPAGES[S.me.role] || {};
+  const allowed = [...tabsFor().map(([k]) => k), ...Object.keys(subpages)];
   if (!allowed.includes(name)) { name = allowed[0]; history.replaceState(null, '', `#${name}`); }
-  renderTabs(name);
+  renderTabs(subpages[name] || name);
   renderBanner();
   $view.innerHTML = '<p class="muted">Loading…</p>';
   try {
@@ -183,7 +194,7 @@ VIEWS.book = async (params) => {
       <div class="card"><h2>One step first: your skill rating</h2>
       <p>Group lessons are split into beginner, intermediate and advanced. One of our pros will rate your level,
       and you can then book group lessons at that level.</p>
-      <p class="muted">To get rated, book a <a href="#private">${pl()}</a> or contact
+      <p class="muted">To get rated, ${S.hidePrivate ? '' : html`book a <a href="#private">${pl()}</a> or `}contact
       ${S.academy.contactPhone || S.academy.contactEmail || 'the academy'}.</p></div>`.s;
     return;
   }
@@ -245,7 +256,7 @@ VIEWS.my = async () => {
           ? html`<button class="sm" data-act="cancelBooking" data-id="${b.bookingId}" data-when="${b.startsAt}">Cancel</button>` : ''}
       </div>`)}</div>`
     : html`<div class="empty card">No group lessons booked. <a href="#book">Find a lesson</a></div>`}
-    <h2 style="margin-top:24px">${PLs()}</h2>
+    ${S.hidePrivate ? '' : html`<h2 style="margin-top:24px">${PLs()}</h2>`}
     ${futurePriv.length ? html`<div class="list">${futurePriv.map((p) => html`<div class="item">
         <div class="main">
           <div class="when">${TT.fmtDateTime(p.startsAt)} <span class="muted small">(${TT.length(p.durationMinutes)})</span></div>
@@ -255,7 +266,7 @@ VIEWS.my = async () => {
         </div>
         ${new Date(p.startsAt) > now ? html`<button class="sm" data-act="cancelPrivate" data-id="${p.id}">Cancel</button>` : ''}
       </div>`)}</div>`
-    : html`<div class="empty card">No ${pls()} booked. <a href="#private">See open times</a></div>`}
+    : S.hidePrivate ? '' : html`<div class="empty card">No ${pls()} booked. <a href="#private">See open times</a></div>`}
     ${notes.length ? html`<h2 style="margin-top:24px">Notes from your coaches</h2>
       <div class="list">${notes.map((n) => html`<div class="card" style="margin:0">
         <div class="small muted">${TT.fmtDate(n.createdAt)} · ${n.authorName}</div>
@@ -360,6 +371,10 @@ VIEWS.account = async () => {
       </div>`) : html`<p class="muted small">You're not on a monthly plan. Choose "Buy and renew every month" on <a href="#buy">Buy lessons</a>
         and your lessons are bought automatically on the 1st of each month.</p>`}
     </section>` : ''}
+    ${isAdmin() ? html`<section class="card"><div class="row between">
+      <div><h2 style="margin:0">Your TennisDesk subscription</h2>
+        <p class="muted small" style="margin:4px 0 0">Your plan, payment card and invoices.</p></div>
+      <a class="btn" href="#billing">Billing</a></div></section>` : ''}
     <form class="card" data-form="profile" novalidate>
       <h2>Your details</h2>
       <div class="form-row">
@@ -863,7 +878,7 @@ VIEWS.billing = async () => {
   if (justPaid) { toast('Thanks, you’re all set.'); history.replaceState(null, '', `${location.pathname}#billing`); }
   const b = await api('GET', '/api/billing/status');
   const labels = { trialing: 'Free trial', active: 'Active', past_due: 'Payment failed', canceled: 'Cancelled', comped: 'Complimentary' };
-  $view.innerHTML = html`<h1>Billing</h1>
+  $view.innerHTML = html`<div class="row between"><h1>Billing</h1>${b.live ? html`<a href="#account" class="btn sm">← Account</a>` : ''}</div>
     <div class="card">
       ${b.trialDays ? html`<h2>Start your ${b.trialDays}-day free trial</h2>
         <p>Add a card to open your academy. You won't be charged during the trial; after ${b.trialDays} days the subscription starts${b.priceLabel ? ` at ${b.priceLabel}` : ''}.
