@@ -1,12 +1,12 @@
 // Builds a ready-to-show demo academy through the app's own API, so it works
 // against the live site as well as a local copy:
 //
-//   node seed-live-demo.js                         live site, address /a/tta-demo
-//   node seed-live-demo.js --base http://localhost:3100 --slug tta-demo
+//   node seed-live-demo.js                         live site, address /a/demo
+//   node seed-live-demo.js --base http://localhost:3100 --slug demo
 //   node seed-live-demo.js --slug pentest-a --name "Pen Test Academy A" --out sales/pentest-a-logins.txt
 //
 // Creates an owner, two pros and twelve students (one owner, one pro and one
-// student have the demo login), Cal Lutheran + Wildflower courts, paid lesson
+// student have the demo login), Oak Valley Park + Riverside courts, paid lesson
 // packs, three weeks of group lessons, private lessons and bookings. A few
 // lessons are placed early tomorrow morning so that, by a meeting later that
 // day, they have been taught and show up in Payroll. Run it the evening before.
@@ -19,9 +19,15 @@ const crypto = require('crypto');
 
 const args = process.argv.slice(2);
 const opt = (name, def) => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : def; };
-const BASE = opt('base', 'https://total-tennis-production.up.railway.app').replace(/\/$/, '');
-const SLUG = opt('slug', 'tta-demo');
-const NAME = opt('name', 'Total Tennis Academy (Demo)');
+const BASE = opt('base', 'https://tennisdesk.app').replace(/\/$/, '');
+const SLUG = opt('slug', 'demo');
+const NAME = opt('name', 'Oak Valley Tennis (Demo)');
+// Everything below is made up on purpose: this demo is shown to prospects, so it
+// must not carry a real academy's name, owner, phone, email or courts.
+const OWNER = 'Alex Morgan';
+const PHONE = '(805) 555-0100';
+const CONTACT_EMAIL = 'support@tennisdesk.app';
+const LOC1 = 'Oak Valley Park', LOC2 = 'Riverside Courts';
 const OUT = opt('out', path.join('sales', 'demo-logins.txt'));
 const TZ = 'America/Los_Angeles';
 const DOMAIN = `${SLUG}.test`;
@@ -80,12 +86,12 @@ const STUDENTS = [
 (async () => {
   console.log(`Building demo academy "${SLUG}" on ${BASE} …`);
   if (await fetch(`${BASE}/api/academy/${SLUG}`).then((r) => r.ok)) {
-    throw new Error(`An academy already uses /a/${SLUG}. Pick another with --slug, e.g. --slug tta-demo2`);
+    throw new Error(`An academy already uses /a/${SLUG}. Pick another with --slug, e.g. --slug demo2`);
   }
 
   // Academy + owner
   const signup = await api(null, 'POST', '/api/auth/academy-signup', {
-    academyName: NAME, slug: SLUG, name: 'Mike Gennette', phone: '(805) 495-0111',
+    academyName: NAME, slug: SLUG, name: OWNER, phone: PHONE,
     email: `owner@${DOMAIN}`, password: PASSWORD, timezone: TZ, acceptTerms: true,
   });
   let owner = signup.token;
@@ -97,12 +103,12 @@ const STUDENTS = [
     await new Promise((r) => rl.question('Press Enter once you have done that… ', () => { rl.close(); r(); }));
     owner = (await api(null, 'POST', '/api/auth/login', { academy: SLUG, email: `owner@${DOMAIN}`, password: PASSWORD })).token;
   }
-  await api(owner, 'PUT', '/api/admin/settings', { contact_email: 'info@totaltennisacademy.org', contact_phone: '(805) 495-0111' });
+  await api(owner, 'PUT', '/api/admin/settings', { contact_email: CONTACT_EMAIL, contact_phone: PHONE });
 
   console.log('• academy and owner created');
   // Courts
-  await api(owner, 'POST', '/api/admin/locations', { name: 'Cal Lutheran', address: '60 W Olsen Rd, Thousand Oaks, CA', courtCount: 7 });
-  await api(owner, 'POST', '/api/admin/locations', { name: 'Wildflower Tennis Courts', courtCount: 1 });
+  await api(owner, 'POST', '/api/admin/locations', { name: LOC1, address: '100 Oak Valley Rd (demo address)', courtCount: 7 });
+  await api(owner, 'POST', '/api/admin/locations', { name: LOC2, courtCount: 1 });
   const locs = await api(owner, 'GET', '/api/locations');
   const court = (loc, n) => locs.find((l) => l.name.startsWith(loc)).courts.find((c) => c.name === `Court ${n}`).id;
 
@@ -150,14 +156,14 @@ const STUDENTS = [
   const post = (level, mins, courtId, proId, day, hh, mm, weeks = 1) => api(owner, 'POST', '/api/staff/sessions', {
     level, durationMinutes: mins, courtId, proId, startsAt: laTime(day, hh, mm), repeatWeeks: weeks, capacity: 6,
   });
-  await post('beginner', 60, court('Cal', 1), marco.id, 1, 6, 0);
-  await post('advanced', 90, court('Cal', 3), marco.id, 1, 7, 0);
-  await post('intermediate', 90, court('Cal', 2), jenna.id, 1, 6, 30);
-  await post('intermediate', 60, court('Wild', 1), jenna.id, 1, 8, 0);
+  await post('beginner', 60, court(LOC1, 1), marco.id, 1, 6, 0);
+  await post('advanced', 90, court(LOC1, 3), marco.id, 1, 7, 0);
+  await post('intermediate', 90, court(LOC1, 2), jenna.id, 1, 6, 30);
+  await post('intermediate', 60, court(LOC2, 1), jenna.id, 1, 8, 0);
   // A weekly schedule over the next three weeks, starting the day after tomorrow.
   const weekly = [
-    ['beginner', 60, court('Cal', 1), marco.id, 9, 0], ['intermediate', 90, court('Cal', 2), jenna.id, 9, 0],
-    ['advanced', 90, court('Cal', 3), marco.id, 17, 0], ['intermediate', 60, court('Wild', 1), jenna.id, 17, 0],
+    ['beginner', 60, court(LOC1, 1), marco.id, 9, 0], ['intermediate', 90, court(LOC1, 2), jenna.id, 9, 0],
+    ['advanced', 90, court(LOC1, 3), marco.id, 17, 0], ['intermediate', 60, court(LOC2, 1), jenna.id, 17, 0],
   ];
   for (let d = 2; d <= 8; d++) {
     const wd = laWeekday(d);
@@ -185,13 +191,13 @@ const STUDENTS = [
   console.log('• rosters filled');
   // Private lessons: one taught tomorrow morning (court fee owed), one booked for
   // the demo student, and open times students can book.
-  await api(owner, 'POST', '/api/staff/private', { proId: marco.id, studentId: students['Sophia Kim'].id, courtId: court('Cal', 5), durationMinutes: 60, startsAt: laTime(1, 8, 30) });
-  await api(owner, 'POST', '/api/staff/private', { proId: jenna.id, studentId: students['Ava Thompson'].id, courtId: court('Cal', 6), durationMinutes: 60, startsAt: laTime(1, 5, 30) });
-  await api(owner, 'POST', '/api/staff/private', { proId: marco.id, studentId: students['Sam Rivera'].id, courtId: court('Cal', 5), durationMinutes: 60, startsAt: laTime(4, 12, 0) });
+  await api(owner, 'POST', '/api/staff/private', { proId: marco.id, studentId: students['Sophia Kim'].id, courtId: court(LOC1, 5), durationMinutes: 60, startsAt: laTime(1, 8, 30) });
+  await api(owner, 'POST', '/api/staff/private', { proId: jenna.id, studentId: students['Ava Thompson'].id, courtId: court(LOC1, 6), durationMinutes: 60, startsAt: laTime(1, 5, 30) });
+  await api(owner, 'POST', '/api/staff/private', { proId: marco.id, studentId: students['Sam Rivera'].id, courtId: court(LOC1, 5), durationMinutes: 60, startsAt: laTime(4, 12, 0) });
   for (const d of [2, 3, 5]) {
-    await api(owner, 'POST', '/api/staff/private', { proId: jenna.id, courtId: court('Cal', 6), durationMinutes: 60, startsAt: laTime(d, 16, 0) });
+    await api(owner, 'POST', '/api/staff/private', { proId: jenna.id, courtId: court(LOC1, 6), durationMinutes: 60, startsAt: laTime(d, 16, 0) });
   }
-  await api(owner, 'POST', '/api/staff/private', { proId: marco.id, courtId: court('Cal', 5), durationMinutes: 60, startsAt: laTime(3, 12, 0) });
+  await api(owner, 'POST', '/api/staff/private', { proId: marco.id, courtId: court(LOC1, 5), durationMinutes: 60, startsAt: laTime(3, 12, 0) });
   const priv = await api(owner, 'GET', '/api/staff/private');
   for (const p of priv.filter((x) => x.studentName === 'Sophia Kim' || x.studentName === 'Ava Thompson')) {
     await api(owner, 'PUT', `/api/staff/private/${p.id}`, { studentPaid: true });
